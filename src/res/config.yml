@@ -1,0 +1,21 @@
+
+users:
+- name: plorio
+  targets:
+  - playit_prod
+  - playit_dev
+  clients:
+  - jump_host_sea_1
+
+clients:
+- name: jump_host_sea_1
+  api_key: 12314j2k1l3j21kl
+
+targets:
+- name: playit_prod
+- name: playit_dev
+
+paths:
+  ca: "/secrets/ca"
+  totp: "/secrets/totp"
+
