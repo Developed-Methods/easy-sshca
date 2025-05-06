@@ -1,4 +1,6 @@
 USER="easy-sshca"
+CA_DOMAIN="$1"
+
 if id -u $USER >/dev/null 2>&1; then
   echo "$USER already exists";
 else
@@ -10,6 +12,8 @@ else
   sudo openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
       -keyout /home/$USER/easy-sshca-data/self-signed.key \
       -out /home/$USER/easy-sshca-data/self-signed.crt \
+      -subj "/CN=${CA_DOMAIN}" \
+      -addext "basicConstraints=critical,CA:FALSE" \
       -batch
   sudo tee /home/$USER/easy-sshca-data/config.yml <<EOF
 listen_addr: 0.0.0.0:9292
@@ -26,7 +30,7 @@ EOF
   sudo chown -R $USER /home/$USER
 fi
 
-sudo curl -L -o /usr/local/bin/easy-sshca https://github.com/Developed-Methods/easy-sshca/releases/download/v0.1.0/easy-sshca-amd64
+sudo curl -L -o /usr/local/bin/easy-sshca https://github.com/Developed-Methods/easy-sshca/releases/latest/download/easy-sshca-amd64
 sudo chmod +x /usr/local/bin/easy-sshca
 
 sudo tee /etc/systemd/system/easy-sshca.service <<EOF

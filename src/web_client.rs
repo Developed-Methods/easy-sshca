@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use http_app::StatusCode;
-use reqwest::Certificate;
+use tls_friend::tls_setup::TlsSetup;
 
 use crate::config::SignDuration;
 
@@ -16,20 +16,23 @@ pub struct WebAuth {
 }
 
 impl WebClient {
-    pub fn new(cert: Certificate, host: String) -> Self {
+    pub fn new(cert: &[u8], host: String) -> Result<Self, std::io::Error> {
+        tls_friend::install_crypto();
+
+        let client_tls = TlsSetup::build_client(cert)?;
+        let client_config = client_tls.into_client_config()?;
+
         let client = reqwest::Client::builder()
-            .tls_built_in_root_certs(false)
-            .add_root_certificate(cert)
-            .danger_accept_invalid_hostnames(true)
+            .use_preconfigured_tls(client_config)
             .https_only(true)
             .build()
             .unwrap();
 
-        WebClient {
+        Ok(WebClient {
             client,
             base_url: format!("https://{}", host),
             auth: None,
-        }
+        })
     }
 
     pub fn set_auth(&mut self, auth: WebAuth) {

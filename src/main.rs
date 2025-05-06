@@ -7,7 +7,6 @@ use easy_sshca::{config::{assert_validname, SignDuration}, ssh_keygen, totp::Tot
 use http_app::StatusCode;
 use rand::{RngCore, SeedableRng};
 use rand_hc::Hc128Rng;
-use reqwest::Certificate;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Parser)]
@@ -178,7 +177,7 @@ async fn main() {
 
             let host = api_addr.crit("missing api address for server");
             let cert = read_cert(&cert_path).await;
-            let client = WebClient::new(cert, host);
+            let client = WebClient::new(&cert, host).crit("failed to setup web client");
 
             let result = client.pubkey(target).await.crit("failed to get pub-key");
             println!("{}", result);
@@ -197,7 +196,7 @@ async fn main() {
 
             let host = api_addr.crit("missing api address for server");
             let cert = read_cert(&cert_path).await;
-            let mut client = WebClient::new(cert, host);
+            let mut client = WebClient::new(&cert, host).crit("failed to setup web client");
 
             client.set_auth(WebAuth {
                 api_key: args.api_key(&home).await.crit("missing api_key"),
@@ -323,12 +322,11 @@ async fn value_or_file(s: &str) -> Result<String, std::io::Error> {
     Ok(s.to_string())
 }
 
-async fn read_cert(path: &str) -> Certificate {
-    let data = match tokio::fs::read(path).await {
+async fn read_cert(path: &str) -> Vec<u8> {
+    match tokio::fs::read(path).await {
         Ok(v) => v,
         Err(error) => crit(format!("Failed to read: {}\nerror: {:?}", path, error)),
-    };
-    Certificate::from_pem(&data).crit("invalid cert format")
+    }
 }
 
 pub trait FailHelper {
