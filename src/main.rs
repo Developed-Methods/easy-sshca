@@ -221,7 +221,7 @@ async fn main() {
                         }
                     }
 
-                    crit(format!("Could not find suitable ssh key to sign"));
+                    crit("Could not find suitable ssh key to sign");
                 }
             };
 
