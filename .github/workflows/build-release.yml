@@ -22,17 +22,6 @@ jobs:
             artifact: easy-sshca-aarch64
             dpkg_arch: arm64
 
-          - name: linux arm7
-            os: ubuntu-latest
-            arch: armv7-unknown-linux-gnueabihf
-            artifact: easy-sshca-armv7
-            dpkg_arch: armhf
-
-          - name: linux 32bit
-            os: ubuntu-latest
-            arch: i686-unknown-linux-gnu
-            artifact: easy-sshca-i686
-            dpkg_arch: i386
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
