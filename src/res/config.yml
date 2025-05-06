@@ -1,3 +1,4 @@
+listen_addr: 0.0.0.0:1234
 
 users:
 - name: plorio
@@ -16,6 +17,7 @@ targets:
 - name: playit_dev
 
 paths:
-  ca: "/secrets/ca"
-  totp: "/secrets/totp"
+  root: "/easy-sshca"
+  tls_crt: "/easy-sshca/self-signed.crt"
+  tls_key: "/easy-sshca/self-signed.key"
 

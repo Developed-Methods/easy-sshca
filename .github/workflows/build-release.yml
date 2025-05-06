@@ -1,0 +1,62 @@
+name: Build Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build_linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux 64bit
+            os: ubuntu-latest
+            arch: x86_64-unknown-linux-musl
+            artifact: easy-sshca-amd64
+            dpkg_arch: amd64
+
+          - name: linux arm64
+            os: ubuntu-latest
+            arch: aarch64-unknown-linux-musl
+            artifact: easy-sshca-aarch64
+            dpkg_arch: arm64
+
+          - name: linux arm7
+            os: ubuntu-latest
+            arch: armv7-unknown-linux-gnueabihf
+            artifact: easy-sshca-armv7
+            dpkg_arch: armhf
+
+          - name: linux 32bit
+            os: ubuntu-latest
+            arch: i686-unknown-linux-gnu
+            artifact: easy-sshca-i686
+            dpkg_arch: i386
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: build release
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --target ${{ matrix.platform.arch }} --release --all
+
+      - name: Upload Binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/easy-sshca
+          asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
+
