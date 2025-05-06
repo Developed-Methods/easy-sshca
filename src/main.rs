@@ -51,6 +51,8 @@ enum Command {
         duration: Option<SignDuration>,
     },
     PrepareTotp {
+        output: Option<String>,
+        #[arg(short('i'), long)]
         issuer: Option<String>,
     },
 }
@@ -146,7 +148,7 @@ async fn main() {
         Command::GenKey { path, comment, stdout  } => {
             let cmt = comment.as_ref().map(|v| v.as_str()).unwrap_or("");
             let private = ssh_keygen::generate_ed25519(cmt).await.crit("failed to generate_ed25519");
-            let privkey = private.to_openssh(ssh_key::LineEnding::LF).unwrap();
+            let privkey = private.to_openssh(ssh_key::LineEnding::LF).crit("failed to serialize private key");
 
             if *stdout {
                 print!("{}", privkey.as_str());
@@ -160,11 +162,11 @@ async fn main() {
                 Err(error) => crit(format!("failed to check if key already exists: {:?}", error)),
             };
 
-            let pubkey = private.public_key().to_openssh().unwrap();
+            let pubkey = private.public_key().to_openssh().crit("failed to serialize public key");
 
-            tokio::fs::write(format!("{}.pub", path), pubkey).await.unwrap();
-            tokio::fs::write(&path, privkey).await.unwrap();
-            tokio::fs::set_permissions(&path, Permissions::from_mode(0o600)).await.unwrap();
+            tokio::fs::write(format!("{}.pub", path), pubkey).await.crit("failed to write public key");
+            tokio::fs::write(&path, privkey).await.crit("failed to write private key");
+            tokio::fs::set_permissions(&path, Permissions::from_mode(0o600)).await.crit("failed to file permissions");
 
             eprintln!("Key written to: {}", path);
             return;
@@ -178,7 +180,7 @@ async fn main() {
             let cert = read_cert(&cert_path).await;
             let client = WebClient::new(cert, host);
 
-            let result = client.pubkey(target).await.unwrap();
+            let result = client.pubkey(target).await.crit("failed to get pub-key");
             println!("{}", result);
         }
         Command::Sign { target, user, file, totp, duration } => {
@@ -241,7 +243,7 @@ async fn main() {
 
                     println!("TOTP Code required:");
                     let mut reader = BufReader::new(tokio::io::stdin()).lines();
-                    let value = reader.next_line().await.crit("failed to read next line").unwrap();
+                    let value = reader.next_line().await.crit("failed to read next line").crit("closed before totp input");
 
                     client.sign(SignRequest {
                         target,
@@ -272,15 +274,15 @@ async fn main() {
                 }
             }
         }
-        Command::PrepareTotp { issuer } => {
+        Command::PrepareTotp { issuer, output } => {
             let issuer = issuer.as_ref().map(|v| v.as_str()).unwrap_or("easy-ssh-ca");
 
             let mut rand = Hc128Rng::from_os_rng();
             let mut bytes = vec![0u8; 32];
             rand.fill_bytes(&mut bytes);
 
-            let totp_str = TotpSecret::new(issuer.to_string(), bytes);
-            qr2term::print_qr(totp_str.to_string()).crit("failed to draw qr code");
+            let totp_secret = TotpSecret::new(issuer.to_string(), bytes);
+            qr2term::print_qr(totp_secret.to_string()).crit("failed to draw qr code");
 
             let mut reader = BufReader::new(tokio::io::stdin()).lines();
             let mut count = 0;
@@ -290,7 +292,7 @@ async fn main() {
 
                 let Some(value) = reader.next_line().await.crit("failed to read next line") else { return };
 
-                let code = totp_str.get_code();
+                let code = totp_secret.get_code();
                 if value.trim() == code {
                     println!("Success");
                     break;
@@ -298,12 +300,17 @@ async fn main() {
 
                 count += 1;
                 if count > 5 {
-                    qr2term::print_qr(totp_str.to_string()).crit("failed to draw qr code");
+                    qr2term::print_qr(totp_secret.to_string()).crit("failed to draw qr code");
                     count = 0;
                 }
             }
 
-            println!("secret:\n{}", totp_str);
+            if let Some(output) = output {
+                tokio::fs::write(&output, totp_secret.to_string()).await.crit("failed to write totp secret to file");
+                println!("wrote secret to: {}", output);
+            } else {
+                println!("secret:\n{}", totp_secret);
+            }
         }
     }
 }

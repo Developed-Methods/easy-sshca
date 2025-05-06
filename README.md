@@ -1,6 +1,9 @@
 ## Easy SSH CA
 A simple tool with a web server for running an SSH-CA with TOTP support.
 
+```
+usage guide to come eventually...
+```
 
 ### Install self-signed certificate and setup nginx
 ```
