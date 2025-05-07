@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use http_app::StatusCode;
+use reqwest::header::HeaderValue;
 use tls_friend::tls_setup::TlsSetup;
 
 use crate::config::SignDuration;
@@ -81,7 +82,11 @@ impl WebClient {
         };
 
         let resp = self.client.post(url)
-            .header(reqwest::header::AUTHORIZATION, format!("Api-Key: {}", auth.api_key))
+            .header(reqwest::header::AUTHORIZATION, {
+                let mut value = HeaderValue::from_str(&format!("Api-Key: {}", auth.api_key.trim())).unwrap();
+                value.set_sensitive(true);
+                value
+            })
             .body(sign.pubkey.to_string())
             .send().await
             .map_err(WebClientError::ReqwestError)?;
