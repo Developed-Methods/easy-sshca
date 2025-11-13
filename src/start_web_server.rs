@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use super::config::Config;
+use super::server_config::ServerConfig;
+use super::web_server::WebServer;
 use http_app::{HttpServer, HttpServerSettings, HttpTls};
 use tokio::task::JoinHandle;
-use super::web_server::WebServer;
 
 pub struct StartWebServerConfig {
     pub config_path: String,
@@ -13,18 +13,26 @@ impl StartWebServerConfig {
     pub async fn start(self) -> Result<JoinHandle<()>, std::io::Error> {
         let config_path = self.config_path;
 
-        let mut current_config = Self::load_confg(&config_path).await?
-            .validate().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut current_config = Self::load_confg(&config_path)
+            .await?
+            .validate()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let listen_addr = current_config.as_config().listen_addr;
         let cert_data = tokio::fs::read(&current_config.as_config().paths.tls_cert).await?;
         let key_data = tokio::fs::read(&current_config.as_config().paths.tls_key).await?;
 
         let web = WebServer::new(current_config.clone());
-        let server = HttpServer::new(web.clone(), HttpServerSettings {
-            tls: Some(HttpTls::WithBytes { cert: cert_data, key: key_data }),
-            ..Default::default()
-        });
+        let server = HttpServer::new(
+            web.clone(),
+            HttpServerSettings {
+                tls: Some(HttpTls::WithBytes {
+                    cert: cert_data,
+                    key: key_data,
+                }),
+                ..Default::default()
+            },
+        );
 
         let handle = tokio::spawn(async move {
             loop {
@@ -62,7 +70,7 @@ impl StartWebServerConfig {
         Ok(handle)
     }
 
-    async fn load_confg(path: &str) -> Result<Config, std::io::Error> {
+    async fn load_confg(path: &str) -> Result<ServerConfig, std::io::Error> {
         let data = tokio::fs::read(path).await?;
         if path.ends_with(".yml") || path.ends_with(".yaml") {
             serde_yml::from_slice(&data)

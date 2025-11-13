@@ -3,20 +3,20 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
-pub struct ValidatedConfig(Config);
+pub struct ValidatedConfig(ServerConfig);
 
 impl ValidatedConfig {
-    pub fn into_config(self) -> Config {
+    pub fn into_config(self) -> ServerConfig {
         self.0
     }
 
-    pub fn as_config(&self) -> &Config {
+    pub fn as_config(&self) -> &ServerConfig {
         &self.0
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct Config {
+pub struct ServerConfig {
     pub listen_addr: SocketAddr,
     pub users: Vec<User>,
     pub clients: Vec<Client>,
@@ -24,7 +24,7 @@ pub struct Config {
     pub paths: Paths,
 }
 
-impl Config {
+impl ServerConfig {
     pub fn validate(&self) -> Result<ValidatedConfig, ConfigValidateError> {
         if self.paths.root.is_none() {
             if self.paths.totp_secret.is_none() {
@@ -45,35 +45,57 @@ impl Config {
         let mut targets = HashMap::new();
 
         for user in &self.users {
-            assert_validname(&user.name).map_err(|n| ConfigValidateError::InvalidName(ConfigSource::User, n))?;
+            assert_validname(&user.name)
+                .map_err(|n| ConfigValidateError::InvalidName(ConfigSource::User, n))?;
             if let Some(existing) = users.insert(&user.name, user) {
-                return Err(ConfigValidateError::DuplicateName(ConfigSource::User, existing.name.clone()));
+                return Err(ConfigValidateError::DuplicateName(
+                    ConfigSource::User,
+                    existing.name.clone(),
+                ));
             }
         }
 
         for client in &self.clients {
-            assert_validname(&client.name).map_err(|n| ConfigValidateError::InvalidName(ConfigSource::Client, n))?;
+            assert_validname(&client.name)
+                .map_err(|n| ConfigValidateError::InvalidName(ConfigSource::Client, n))?;
             if let Some(existing) = clients.insert(&client.name, client) {
-                return Err(ConfigValidateError::DuplicateName(ConfigSource::Client, existing.name.clone()));
+                return Err(ConfigValidateError::DuplicateName(
+                    ConfigSource::Client,
+                    existing.name.clone(),
+                ));
             }
         }
 
         for target in &self.targets {
-            assert_validname(&target.name).map_err(|n| ConfigValidateError::InvalidName(ConfigSource::Target, n))?;
+            assert_validname(&target.name)
+                .map_err(|n| ConfigValidateError::InvalidName(ConfigSource::Target, n))?;
             if let Some(existing) = targets.insert(&target.name, target) {
-                return Err(ConfigValidateError::DuplicateName(ConfigSource::Target, existing.name.clone()));
+                return Err(ConfigValidateError::DuplicateName(
+                    ConfigSource::Target,
+                    existing.name.clone(),
+                ));
             }
         }
 
         for user in &self.users {
             for client in &user.allowed_clients {
                 if !clients.contains_key(client) {
-                    return Err(ConfigValidateError::NotFound(ConfigSource::User, user.name.clone(), ConfigSource::Client, client.clone()));
+                    return Err(ConfigValidateError::NotFound(
+                        ConfigSource::User,
+                        user.name.clone(),
+                        ConfigSource::Client,
+                        client.clone(),
+                    ));
                 }
             }
             for target in &user.allowed_targets {
                 if !targets.contains_key(target) {
-                    return Err(ConfigValidateError::NotFound(ConfigSource::User, user.name.clone(), ConfigSource::Target, target.clone()));
+                    return Err(ConfigValidateError::NotFound(
+                        ConfigSource::User,
+                        user.name.clone(),
+                        ConfigSource::Target,
+                        target.clone(),
+                    ));
                 }
             }
         }
@@ -83,7 +105,10 @@ impl Config {
 }
 
 pub fn assert_validname(s: &str) -> Result<(), String> {
-    if s.as_bytes().iter().any(|c| !c.is_ascii_alphanumeric() && *c != b'_' && *c != b'-') {
+    if s.as_bytes()
+        .iter()
+        .any(|c| !c.is_ascii_alphanumeric() && *c != b'_' && *c != b'-')
+    {
         Err(s.to_string())
     } else {
         Ok(())
@@ -104,14 +129,13 @@ impl Display for ConfigValidateError {
     }
 }
 
-impl std::error::Error for ConfigValidateError {
-}
+impl std::error::Error for ConfigValidateError {}
 
 #[derive(Debug)]
 pub enum ConfigSource {
     User,
     Client,
-    Target
+    Target,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -207,7 +231,19 @@ pub struct Target {
     pub max_duration: SignDuration,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(
+    Default,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    clap::ValueEnum,
+)]
 pub enum SignDuration {
     #[serde(alias = "minute")]
     Minute,
@@ -256,7 +292,7 @@ mod test {
 
     #[test]
     fn config_parse_yml_test() {
-        let parsed = serde_yml::from_str::<Config>(include_str!("./res/config.yml")).unwrap();
+        let parsed = serde_yml::from_str::<ServerConfig>(include_str!("./res/config.yml")).unwrap();
         println!("Parsed:\n{:?}", parsed);
     }
 }

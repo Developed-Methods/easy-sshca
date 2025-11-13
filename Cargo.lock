@@ -484,6 +484,7 @@ dependencies = [
  "clap",
  "constant_time_eq",
  "dotenv",
+ "home",
  "http-app",
  "qr2term",
  "rand 0.9.1",
