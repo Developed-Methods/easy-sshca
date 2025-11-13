@@ -3,7 +3,7 @@ use http_app::StatusCode;
 use reqwest::header::HeaderValue;
 use tls_friend::tls_setup::TlsSetup;
 
-use crate::config::SignDuration;
+use crate::server_config::SignDuration;
 
 pub struct WebClient {
     base_url: String,
@@ -41,13 +41,15 @@ impl WebClient {
     }
 
     pub async fn pubkey(&self, target: &str) -> Result<String, WebClientError> {
-        let resp = self.client.get(format!("{}/pubkey/{}", self.base_url, target))
-            .send().await
+        let resp = self
+            .client
+            .get(format!("{}/pubkey/{}", self.base_url, target))
+            .send()
+            .await
             .map_err(WebClientError::ReqwestError)?;
 
         let status = resp.status();
-        let text = resp.text().await
-            .map_err(WebClientError::ReqwestError)?;
+        let text = resp.text().await.map_err(WebClientError::ReqwestError)?;
 
         if !status.is_success() {
             return Err(WebClientError::ResponseError(ErrorResponse {
@@ -63,7 +65,8 @@ impl WebClient {
         let auth = self.auth.as_ref().ok_or(WebClientError::MissingAuth)?;
 
         let url = if let Some(totp) = sign.totp {
-            format!("{}/sign/{}/{}/{}?totp={}&d={}",
+            format!(
+                "{}/sign/{}/{}/{}?totp={}&d={}",
                 self.base_url,
                 auth.client_name,
                 sign.target,
@@ -72,7 +75,8 @@ impl WebClient {
                 sign.duration.param_str(),
             )
         } else {
-            format!("{}/sign/{}/{}/{}?d={}",
+            format!(
+                "{}/sign/{}/{}/{}?d={}",
                 self.base_url,
                 auth.client_name,
                 sign.target,
@@ -81,25 +85,29 @@ impl WebClient {
             )
         };
 
-        let resp = self.client.post(url)
+        let resp = self
+            .client
+            .post(url)
             .header(reqwest::header::AUTHORIZATION, {
-                let mut value = HeaderValue::from_str(&format!("Api-Key: {}", auth.api_key.trim())).unwrap();
+                let mut value =
+                    HeaderValue::from_str(&format!("Api-Key: {}", auth.api_key.trim())).unwrap();
                 value.set_sensitive(true);
                 value
             })
             .body(sign.pubkey.to_string())
-            .send().await
+            .send()
+            .await
             .map_err(WebClientError::ReqwestError)?;
 
-        let expires_at = resp.headers()
+        let expires_at = resp
+            .headers()
             .get(reqwest::header::EXPIRES)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| DateTime::parse_from_rfc2822(v).ok())
             .map(|v| v.to_utc());
 
         let status = resp.status();
-        let text = resp.text().await
-            .map_err(WebClientError::ReqwestError)?;
+        let text = resp.text().await.map_err(WebClientError::ReqwestError)?;
 
         if !status.is_success() {
             return Err(WebClientError::ResponseError(ErrorResponse {
@@ -140,4 +148,3 @@ pub struct ErrorResponse {
     pub status: StatusCode,
     pub response: String,
 }
-
