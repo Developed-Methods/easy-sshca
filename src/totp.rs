@@ -1,8 +1,12 @@
-use std::{fmt::{Debug, Display}, str::FromStr, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fmt::{Debug, Display},
+    str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use base32::Alphabet;
 use http_app::hyper::Uri;
-use totp_lite::{Sha1, DEFAULT_STEP};
+use totp_lite::{DEFAULT_STEP, Sha1};
 
 #[derive(PartialEq, Eq)]
 pub struct TotpSecret {
@@ -12,7 +16,11 @@ pub struct TotpSecret {
 
 impl Debug for TotpSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TotpSecret{{issuer: {:?}, secret: \"<secret>\"}}", self.issuer)
+        write!(
+            f,
+            "TotpSecret{{issuer: {:?}, secret: \"<secret>\"}}",
+            self.issuer
+        )
     }
 }
 
@@ -24,7 +32,10 @@ impl TotpSecret {
     }
 
     pub fn get_code(&self) -> String {
-        let seconds: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let seconds: u64 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         totp_lite::totp_custom::<Sha1>(DEFAULT_STEP, 6, &self.secret, seconds).to_string()
     }
 
@@ -36,7 +47,11 @@ impl TotpSecret {
 impl Display for TotpSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let encoded = base32::encode(ALPHABET, &self.secret);
-        write!(f, "otpauth://totp/{}?secret={}&issuer={}&algorithm=sha1&digits=6", self.issuer, encoded, self.issuer)
+        write!(
+            f,
+            "otpauth://totp/{}?secret={}&issuer={}&algorithm=sha1&digits=6",
+            self.issuer, encoded, self.issuer
+        )
     }
 }
 
@@ -73,16 +88,22 @@ impl FromStr for TotpSecret {
                     continue;
                 }
 
-                if key.eq_ignore_ascii_case("algorithm")  {
+                if key.eq_ignore_ascii_case("algorithm") {
                     if !value.eq_ignore_ascii_case("sha1") {
-                        return Err(TotpSecretParseError::UnexpectedIssuerValue(key.to_string(), value.to_string()));
+                        return Err(TotpSecretParseError::UnexpectedIssuerValue(
+                            key.to_string(),
+                            value.to_string(),
+                        ));
                     }
                     continue;
                 }
 
                 if key.eq_ignore_ascii_case("digits") {
                     if !value.eq_ignore_ascii_case("6") {
-                        return Err(TotpSecretParseError::UnexpectedIssuerValue(key.to_string(), value.to_string()));
+                        return Err(TotpSecretParseError::UnexpectedIssuerValue(
+                            key.to_string(),
+                            value.to_string(),
+                        ));
                     }
                     continue;
                 }
@@ -95,10 +116,7 @@ impl FromStr for TotpSecret {
         let secret = base32::decode(ALPHABET, &secret_slice)
             .ok_or(TotpSecretParseError::InvalidSecretEncoding)?;
 
-        Ok(TotpSecret {
-            issuer,
-            secret,
-        })
+        Ok(TotpSecret { issuer, secret })
     }
 }
 
@@ -125,11 +143,16 @@ mod test {
     fn totp_secret_parse_test() {
         let s = "otpauth://totp/playit.gg?secret=MZSHGYLKMZVWYZDTMFVGM23MMRZWC2TGNNWGIYLT&issuer=playit.gg";
         let parse = TotpSecret::from_str(s).unwrap();
-        assert_eq!(parse.secret, base32::decode(base32::Alphabet::Rfc4648 { padding: false }, "MZSHGYLKMZVWYZDTMFVGM23MMRZWC2TGNNWGIYLT").unwrap());
+        assert_eq!(
+            parse.secret,
+            base32::decode(
+                base32::Alphabet::Rfc4648 { padding: false },
+                "MZSHGYLKMZVWYZDTMFVGM23MMRZWC2TGNNWGIYLT"
+            )
+            .unwrap()
+        );
 
         let there_and_back = TotpSecret::from_str(&parse.to_string()).unwrap();
         assert_eq!(there_and_back, parse);
     }
 }
-
-

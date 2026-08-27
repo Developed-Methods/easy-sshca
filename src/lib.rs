@@ -2,6 +2,8 @@ pub mod client_config;
 pub mod config_file;
 pub mod fail_helper;
 pub mod server_config;
+pub mod server_database;
+pub mod server_import;
 pub mod ssh_keygen;
 pub mod start_web_server;
 pub mod totp;

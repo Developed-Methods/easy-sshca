@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedConfig(ServerConfig);
 
 impl ValidatedConfig {
@@ -15,38 +15,24 @@ impl ValidatedConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     pub listen_addr: SocketAddr,
+    pub tls_cert: Vec<u8>,
+    pub tls_key: Vec<u8>,
     pub users: Vec<User>,
     pub clients: Vec<Client>,
     pub targets: Vec<Target>,
-    pub paths: Paths,
 }
 
 impl ServerConfig {
     pub fn validate(&self) -> Result<ValidatedConfig, ConfigValidateError> {
-        if self.paths.root.is_none() {
-            if self.paths.totp_secret.is_none() {
-                return Err(ConfigValidateError::MissingPath("totp"));
-            }
-
-            if self.paths.ca_secret.is_none() {
-                return Err(ConfigValidateError::MissingPath("ca"));
-            }
-
-            if self.paths.api_secret.is_none() {
-                return Err(ConfigValidateError::MissingPath("api"));
-            }
-        }
-
         let mut users = HashMap::new();
         let mut clients = HashMap::new();
         let mut targets = HashMap::new();
 
         for user in &self.users {
-            assert_validname(&user.name)
-                .map_err(|n| ConfigValidateError::InvalidName(ConfigSource::User, n))?;
+            validate_name(&user.name, ConfigSource::User)?;
             if let Some(existing) = users.insert(&user.name, user) {
                 return Err(ConfigValidateError::DuplicateName(
                     ConfigSource::User,
@@ -56,8 +42,7 @@ impl ServerConfig {
         }
 
         for client in &self.clients {
-            assert_validname(&client.name)
-                .map_err(|n| ConfigValidateError::InvalidName(ConfigSource::Client, n))?;
+            validate_name(&client.name, ConfigSource::Client)?;
             if let Some(existing) = clients.insert(&client.name, client) {
                 return Err(ConfigValidateError::DuplicateName(
                     ConfigSource::Client,
@@ -67,8 +52,7 @@ impl ServerConfig {
         }
 
         for target in &self.targets {
-            assert_validname(&target.name)
-                .map_err(|n| ConfigValidateError::InvalidName(ConfigSource::Target, n))?;
+            validate_name(&target.name, ConfigSource::Target)?;
             if let Some(existing) = targets.insert(&target.name, target) {
                 return Err(ConfigValidateError::DuplicateName(
                     ConfigSource::Target,
@@ -88,6 +72,7 @@ impl ServerConfig {
                     ));
                 }
             }
+
             for target in &user.allowed_targets {
                 if !targets.contains_key(target) {
                     return Err(ConfigValidateError::NotFound(
@@ -104,10 +89,15 @@ impl ServerConfig {
     }
 }
 
+fn validate_name(name: &str, source: ConfigSource) -> Result<(), ConfigValidateError> {
+    assert_validname(name).map_err(|name| ConfigValidateError::InvalidName(source, name))
+}
+
 pub fn assert_validname(s: &str) -> Result<(), String> {
-    if s.as_bytes()
-        .iter()
-        .any(|c| !c.is_ascii_alphanumeric() && *c != b'_' && *c != b'-')
+    if s.is_empty()
+        || s.as_bytes()
+            .iter()
+            .any(|c| !c.is_ascii_alphanumeric() && *c != b'_' && *c != b'-')
     {
         Err(s.to_string())
     } else {
@@ -120,12 +110,11 @@ pub enum ConfigValidateError {
     InvalidName(ConfigSource, String),
     DuplicateName(ConfigSource, String),
     NotFound(ConfigSource, String, ConfigSource, String),
-    MissingPath(&'static str),
 }
 
 impl Display for ConfigValidateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -149,72 +138,8 @@ pub struct User {
     pub max_duration: SignDuration,
     #[serde(default)]
     pub allow_missing_totp: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct Paths {
-    pub root: Option<String>,
-
-    #[serde(alias = "totp")]
+    #[serde(default)]
     pub totp_secret: Option<String>,
-    #[serde(alias = "ca")]
-    pub ca_secret: Option<String>,
-    #[serde(alias = "api")]
-    pub api_secret: Option<String>,
-
-    #[serde(alias = "tls_crt")]
-    pub tls_cert: String,
-    pub tls_key: String,
-}
-
-impl Paths {
-    pub fn totp_path(&self, user: &str) -> String {
-        assert_eq!(assert_validname(user), Ok(()));
-
-        if let Some(base) = &self.totp_secret {
-            format!("{}/{}.totp", base, user)
-        } else if let Some(root) = &self.root {
-            format!("{}/totp/{}.totp", root, user)
-        } else {
-            panic!("root and totp paths not defined")
-        }
-    }
-
-    pub fn ca_path(&self, target: &str) -> String {
-        assert_eq!(assert_validname(target), Ok(()));
-
-        if let Some(base) = &self.totp_secret {
-            format!("{}/{}.pub", base, target)
-        } else if let Some(root) = &self.root {
-            format!("{}/ca/{}.pub", root, target)
-        } else {
-            panic!("root and ca paths not defined")
-        }
-    }
-
-    pub fn ca_priv_path(&self, target: &str) -> String {
-        assert_eq!(assert_validname(target), Ok(()));
-
-        if let Some(base) = &self.totp_secret {
-            format!("{}/{}", base, target)
-        } else if let Some(root) = &self.root {
-            format!("{}/ca/{}", root, target)
-        } else {
-            panic!("root and ca paths not defined")
-        }
-    }
-
-    pub fn api_path(&self, client: &str) -> String {
-        assert_eq!(assert_validname(client), Ok(()));
-
-        if let Some(base) = &self.totp_secret {
-            format!("{}/{}.key", base, client)
-        } else if let Some(root) = &self.root {
-            format!("{}/api/{}.key", root, client)
-        } else {
-            panic!("root and api paths not defined")
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -222,6 +147,8 @@ pub struct Client {
     pub name: String,
     #[serde(default)]
     pub max_duration: SignDuration,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -229,6 +156,10 @@ pub struct Target {
     pub name: String,
     #[serde(default)]
     pub max_duration: SignDuration,
+    #[serde(default)]
+    pub ca_private_key: String,
+    #[serde(default)]
+    pub ca_public_key: String,
 }
 
 #[derive(
@@ -275,6 +206,15 @@ impl SignDuration {
         }
     }
 
+    pub fn database_str(&self) -> &'static str {
+        match self {
+            SignDuration::Minute => "minute",
+            SignDuration::Hour => "hour",
+            SignDuration::Day => "day",
+            SignDuration::Week => "week",
+        }
+    }
+
     pub fn from_param_str(s: &str) -> Option<Self> {
         match s {
             "minute" | "m" => Some(SignDuration::Minute),
@@ -287,12 +227,26 @@ impl SignDuration {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     #[test]
-    fn config_parse_yml_test() {
-        let parsed = serde_yml::from_str::<ServerConfig>(include_str!("./res/config.yml")).unwrap();
-        println!("Parsed:\n{:?}", parsed);
+    fn empty_names_are_invalid() {
+        assert!(assert_validname("").is_err());
+    }
+
+    #[test]
+    fn database_durations_round_trip() {
+        for duration in [
+            SignDuration::Minute,
+            SignDuration::Hour,
+            SignDuration::Day,
+            SignDuration::Week,
+        ] {
+            assert_eq!(
+                SignDuration::from_param_str(duration.database_str()),
+                Some(duration)
+            );
+        }
     }
 }

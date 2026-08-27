@@ -1,11 +1,14 @@
-use std::{fmt::Debug, fs::Permissions, os::unix::fs::PermissionsExt};
+use std::{fmt::Debug, fs::Permissions, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use chrono::Utc;
 use clap::Parser;
 use easy_sshca::{
     client_config::ClientConfig,
     fail_helper::{FailHelper, crit},
+    server_config::ServerConfig,
     server_config::{SignDuration, assert_validname},
+    server_database::{DatabaseError, ServerDatabase},
+    server_import::load_legacy_config,
     ssh_keygen,
     totp::TotpSecret,
 };
@@ -30,7 +33,20 @@ struct Args {
 #[derive(Debug, Parser)]
 enum Command {
     StartServer {
-        config_path: Option<String>,
+        database_path: Option<String>,
+    },
+    InitServer {
+        database_path: String,
+        #[arg(long, default_value = "0.0.0.0:9292")]
+        listen_addr: SocketAddr,
+        #[arg(long)]
+        tls_cert: String,
+        #[arg(long)]
+        tls_key: String,
+    },
+    ImportServer {
+        config_path: String,
+        database_path: String,
     },
     GenKey {
         path: Option<String>,
@@ -67,22 +83,80 @@ async fn main() {
     let client_config_res = ClientConfig::load(args.client_config_path).await;
 
     match &args.command {
-        Command::StartServer { config_path } => {
+        Command::StartServer { database_path } => {
             tracing_subscriber::fmt().init();
 
-            let config_path = match config_path {
+            let database_path = match database_path {
                 Some(v) => Some(v.clone()),
-                None => dotenv::var("CONFIG_PATH").ok(),
+                None => dotenv::var("DATABASE_PATH").ok(),
             }
-            .crit("no config path set");
+            .crit("no database path set");
 
-            let handle = StartWebServerConfig { config_path }
+            let handle = StartWebServerConfig { database_path }
                 .start()
                 .await
                 .crit("failed to start server");
 
             tracing::info!("server running");
             let _ = handle.await;
+        }
+        Command::InitServer {
+            database_path,
+            listen_addr,
+            tls_cert,
+            tls_key,
+        } => {
+            let cert = tokio::fs::read(tls_cert)
+                .await
+                .crit("failed to read TLS certificate");
+            let key = tokio::fs::read(tls_key)
+                .await
+                .crit("failed to read TLS private key");
+            let database = ServerDatabase::open(database_path)
+                .await
+                .crit("failed to open server database");
+
+            match database.load_config().await {
+                Err(DatabaseError::MissingServerSettings) => {}
+                Ok(_) => crit("server database is already initialized"),
+                Err(error) => crit(format!("failed to read server database: {error}")),
+            }
+
+            database
+                .save_config(&ServerConfig {
+                    listen_addr: *listen_addr,
+                    tls_cert: cert,
+                    tls_key: key,
+                    users: Vec::new(),
+                    clients: Vec::new(),
+                    targets: Vec::new(),
+                })
+                .await
+                .crit("failed to initialize server database");
+            eprintln!("initialized server database at {database_path}");
+        }
+        Command::ImportServer {
+            config_path,
+            database_path,
+        } => {
+            let config = load_legacy_config(config_path)
+                .await
+                .crit("failed to load legacy server configuration");
+            let database = ServerDatabase::open(database_path)
+                .await
+                .crit("failed to open server database");
+
+            match database.load_config().await {
+                Err(DatabaseError::MissingServerSettings) => {}
+                Ok(_) => crit("server database is already initialized"),
+                Err(error) => crit(format!("failed to read server database: {error}")),
+            }
+
+            database
+                .save_config(&config)
+                .await
+                .crit("failed to import server configuration");
+            eprintln!("imported server configuration into {database_path}");
         }
         Command::GenKey {
             path,
