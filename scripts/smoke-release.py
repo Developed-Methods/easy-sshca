@@ -49,7 +49,8 @@ def main():
             process.wait(timeout=15)
 
         try:
-            cli(root / "unused.yaml", "server", "init", "--name", "Release smoke", "--db", str(root / "ca.db"))
+            cli(root / "unused.yaml", "server", "init", "--name", "Release smoke", "--folder", str(root / "instance"))
+            root = root / "instance"
             subprocess.run([
                 "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
                 "-keyout", str(root / "tls.key"), "-out", str(root / "tls.crt"),
@@ -65,7 +66,7 @@ def main():
                 f"  certificate: {root}/tls.crt\n  private_key: {root}/tls.key\n"
                 "limits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n"
             )
-            admin_config = root / "admin.yaml"
+            admin_config = root / "operator.yaml"
             cli(admin_config, "configure", "--server", endpoint, "--tls-ca", str(root / "tls.crt"),
                 "--api-key-stdin", secret=(root / "ca.admin-key").read_text())
             process = start()

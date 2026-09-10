@@ -5,43 +5,48 @@
 Verify the release archive's checksum before extracting it.
 Install the executable as `/usr/local/bin/easy-sshca`.
 Create an unprivileged `easy-sshca` service account.
-Create `/var/lib/easy-sshca` with that account as owner and mode 0700.
-Copy `packaging/server.yaml` to `/etc/easy-sshca/server.yaml`.
-
-Provision a TLS certificate for the server's DNS name.
-Place its certificate and private key at the paths named in server YAML.
-Give the service account read access to the TLS files.
-Set the TLS private key to mode 0600.
-
-Initialize the database as the service account:
+Initialize a new folder and assign it to the service account:
 
 ```sh
-sudo -u easy-sshca easy-sshca server init \
-  --name "Example SSH CA" \
-  --db /var/lib/easy-sshca/ca.db \
-  --secret-output /var/lib/easy-sshca/bootstrap-secret \
-  --admin-output /var/lib/easy-sshca/admin-key
+sudo easy-sshca server init \
+  --name "Example SSH CA" --folder /var/lib/easy-sshca
+sudo chown -R easy-sshca:easy-sshca /var/lib/easy-sshca
 ```
 
-Initialization refuses an existing database or credential output file.
-It creates the database and credential files with mode 0600.
+Initialization creates the folder with mode 0700 and its files with mode 0600.
+It refuses existing folders, including empty directories.
+The folder contains:
+
+- `ca.db`: encrypted database.
+- `ca.bootstrap-secret`: bootstrap secret for unlocking.
+- `ca.admin-key`: administrator API key.
+- `tls.crt` and `tls.key`: self-signed localhost certificate and private key.
+- `server.yaml`: server configuration.
+- `admin.yaml`: administrator client configuration with the key and TLS trust path.
+
+Initialization prints a start command that references the new server configuration.
+Configuration paths are relative to the folder, so the folder can be moved.
+The generated listeners use loopback ports 9443 and 9444.
+The certificate covers `localhost`, `127.0.0.1`, and `::1`.
+For remote access, change the listener addresses and provision a certificate for the server's DNS name.
+Update `admin.yaml` with the server URL and appropriate TLS trust file.
+
 Move the bootstrap secret into separate, protected operator storage.
-Store the admin key separately from the bootstrap secret.
-Remove the original credential files after verifying the protected copies.
+Keep administrator credentials, including `admin.yaml`, in protected operator storage.
+Update relative TLS paths when moving client configuration separately.
 
 An existing admin key can be supplied through `--admin-api-key-file`.
+Initialization copies it into the new folder's credential file and admin configuration.
 Its format is `esca_ad_<canonical-UUIDv7>_<32-random-bytes-as-unpadded-Base64url>`.
 Access tokens use `esca_at` with the same identifier and secret encoding.
 Bootstrap secrets contain 32 random bytes encoded as unpadded Base64url.
-Human passwords are unsupported.
 
-Credential files remain after a partial initialization failure.
-Inspect those files before retrying with new output paths.
-Initialization removes a newly created database if its transaction fails.
-It never replaces existing credentials.
+Partial files remain after initialization fails.
+Inspect those files before retrying with a new folder.
 
 Install `packaging/easy-sshca.service` into `/etc/systemd/system/`.
-Reload systemd and start the service:
+Its start command uses `/var/lib/easy-sshca/server.yaml`.
+Adjust that path if you chose another folder.
 
 ```sh
 sudo systemctl daemon-reload

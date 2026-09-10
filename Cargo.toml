@@ -21,6 +21,7 @@ prost = "0.14"
 qrcode = { version = "0.14", default-features = false }
 rand_core = { version = "0.6", features = ["getrandom"] }
 rpassword = "7"
+rcgen = "0.14"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl", "fallible_uint", "hooks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
@@ -46,7 +47,6 @@ protoc-bin-vendored = "3"
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
-rcgen = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [profile.release]

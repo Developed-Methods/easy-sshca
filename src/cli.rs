@@ -98,13 +98,9 @@ pub enum Server {
         #[arg(long)]
         name: String,
         #[arg(long)]
-        db: PathBuf,
+        folder: PathBuf,
         #[arg(long)]
         admin_api_key_file: Option<PathBuf>,
-        #[arg(long)]
-        secret_output: Option<PathBuf>,
-        #[arg(long)]
-        admin_output: Option<PathBuf>,
     },
     Start {
         #[arg(long)]
@@ -511,14 +507,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             command:
                 Server::Init {
                     name,
-                    db,
+                    folder,
                     admin_api_key_file,
-                    secret_output,
-                    admin_output,
                 },
         } => {
+            use std::os::unix::fs::DirBuilderExt;
+            if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+                bail!("instance name requires 1–128 printable characters");
+            }
+            let folder = config::resolve(&folder, Path::new("."))?;
+            let executable =
+                std::env::current_exe().context("cannot locate the server executable")?;
+            let quote = |path: &Path| -> anyhow::Result<String> {
+                Ok(format!(
+                    "'{}'",
+                    path.to_str()
+                        .context("initialization paths must be valid UTF-8")?
+                        .replace('\'', "'\\''")
+                ))
+            };
+            let start_command = format!(
+                "{} server start --config {}",
+                quote(&executable)?,
+                quote(&folder.join("server.yaml"))?
+            );
             let secret = auth::random_secret();
-            let supplied = admin_api_key_file.is_some();
             let admin = if let Some(p) = admin_api_key_file {
                 Zeroizing::new(config::secure_read(&p)?.trim().into())
             } else {
@@ -527,31 +540,68 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             if auth::key(&admin)?.kind != "ad" {
                 bail!("supplied credential must be an admin key");
             }
-            let secret_path =
-                secret_output.unwrap_or_else(|| db.with_extension("bootstrap-secret"));
-            let admin_path = admin_output.unwrap_or_else(|| db.with_extension("admin-key"));
-            if db.exists() {
-                bail!("database already exists");
-            }
-            config::exclusive(&secret_path, format!("{}\n", *secret).as_bytes(), 0o600)?;
-            if !supplied {
+            let tls = rcgen::generate_simple_self_signed(vec![
+                "localhost".into(),
+                "127.0.0.1".into(),
+                "::1".into(),
+            ])
+            .context("cannot generate localhost TLS certificate")?;
+            config::private_parent(&folder)?;
+            fs::DirBuilder::new().mode(0o700).create(&folder).with_context(|| format!(
+                "cannot create initialization folder {}. Choose a new folder; existing folders are never overwritten",
+                folder.display()
+            ))?;
+            let db = folder.join("ca.db");
+            let secret_path = folder.join("ca.bootstrap-secret");
+            let admin_path = folder.join("ca.admin-key");
+            let server_config = folder.join("server.yaml");
+            let admin_config = folder.join("admin.yaml");
+            (|| -> anyhow::Result<()> {
+                config::exclusive(&secret_path, format!("{}\n", *secret).as_bytes(), 0o600)?;
                 config::exclusive(&admin_path, format!("{}\n", *admin).as_bytes(), 0o600)?;
-            }
-            crate::storage::Database::initialize(&db, &secret, &admin, &name).context(
-                "initialization failed; protected credential files remain for inspection",
-            )?;
+                config::exclusive(&folder.join("tls.crt"), tls.cert.pem().as_bytes(), 0o600)?;
+                let private_key = Zeroizing::new(tls.signing_key.serialize_pem());
+                config::exclusive(&folder.join("tls.key"), private_key.as_bytes(), 0o600)?;
+                crate::storage::Database::initialize(&db, &secret, &admin, &name)?;
+                config::exclusive(&server_config, b"version: 1
+database: ca.db
+rpc_listen: 127.0.0.1:9443
+https_listen: 127.0.0.1:9444
+tls:
+  certificate: tls.crt
+  private_key: tls.key
+limits:
+  request_bytes: 65536
+  rpc_timeout: 10s
+  database_queue: 128
+", 0o600)?;
+                let client = ClientConfig {
+                    version: 1,
+                    server: "https://localhost:9443".into(),
+                    api_key: Some(admin.to_string()),
+                    tls_ca: Some(PathBuf::from("tls.crt")),
+                    defaults: Default::default(),
+                };
+                let yaml = Zeroizing::new(serde_saphyr::to_string(&client)?);
+                config::exclusive(&admin_config, yaml.as_bytes(), 0o600)?;
+                config::sync_parent(&server_config)?;
+                config::sync_parent(&folder)?;
+                Ok(())
+            })().with_context(|| format!(
+                "initialization failed in {}. Partial files remain for inspection; retry with a new folder",
+                folder.display()
+            ))?;
             output(
                 json,
-                serde_json::json!({"database":db,"bootstrap_secret_file":secret_path,"admin_key_file":if supplied {None}else{Some(&admin_path)}}),
+                serde_json::json!({"database":db,"bootstrap_secret_file":secret_path,"admin_key_file":admin_path,"server_config":server_config,"admin_config":admin_config,"start_command":start_command}),
                 &format!(
-                    "Initialized {}\nBootstrap secret: {}{}",
-                    db.display(),
+                    "Initialized {}\nServer configuration: {}\nAdmin configuration: {}\nBootstrap secret: {}\nAdmin key: {}\nTLS: self-signed for localhost (listeners use loopback)\n\nStart the server:\n{}",
+                    folder.display(),
+                    server_config.display(),
+                    admin_config.display(),
                     secret_path.display(),
-                    if supplied {
-                        String::new()
-                    } else {
-                        format!("\nAdmin key: {}", admin_path.display())
-                    }
+                    admin_path.display(),
+                    start_command
                 ),
             )
         }

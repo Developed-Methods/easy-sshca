@@ -28,14 +28,15 @@ The [implementation plan](docs/implementation-plan.html) records the design requ
 The protobuf contract lives in [proto/easysshca/v1/ca.proto](proto/easysshca/v1/ca.proto).
 
 ```sh
-easy-sshca server init --name "Example SSH CA" --db ./ca.db
-easy-sshca server start --config ./server.yaml
-easy-sshca server unlock --server https://ca.example.com:9443 --secret-stdin < ./ca.bootstrap-secret
+easy-sshca server init --name "Example SSH CA" --folder ./my-ca
+easy-sshca server start --config ./my-ca/server.yaml
+easy-sshca --config ./my-ca/admin.yaml server unlock --secret-stdin < ./my-ca/ca.bootstrap-secret
 ```
 
-Initialization writes credentials to separate, exclusively created files with mode 0600.
-Prepare the TLS certificate and server YAML before starting the server.
-Use `packaging/server.yaml` as the configuration template.
+Initialization creates a private folder containing the database, credentials, TLS files, and server and admin configurations.
+It prints a start command using the generated configuration. Existing folders are refused.
+The generated self-signed certificate covers localhost and loopback IP addresses; listeners bind to loopback.
+For remote access, update the listener addresses and supply a certificate for the server hostname.
 
 This is a replacement implementation with a new database schema, protocol, and configuration format.
 It includes no migration or compatibility layer.

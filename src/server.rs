@@ -65,7 +65,7 @@ impl State {
             anyhow::bail!("queue capacity and timeout must be positive");
         }
         let metadata = std::fs::metadata(&path).with_context(|| format!(
-            "cannot access database {}. Check the database path in your server configuration. For a new installation, run easy-sshca server init --name NAME --db PATH",
+            "cannot access database {}. Check the database path in your server configuration. For a new installation, run easy-sshca server init --name NAME --folder NEW_FOLDER",
             path.display()
         ))?;
         if !metadata.is_file() {

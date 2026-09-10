@@ -167,7 +167,7 @@ impl ServerConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = fs::read_to_string(path).with_context(|| {
             format!(
-                "cannot read server configuration {}. Create it from packaging/server.yaml, or select an existing file with --config PATH",
+                "cannot read server configuration {}. For a new server, run easy-sshca server init --name NAME --folder NEW_FOLDER. Otherwise, select an existing file with --config PATH",
                 path.display()
             )
         })?;
