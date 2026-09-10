@@ -31,37 +31,86 @@ fn init_creates_private_complete_instance_and_refuses_overwrites() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         result["result"]["server_config"],
-        folder.join("server.yaml").to_str().unwrap()
+        folder.join("server/server.yaml").to_str().unwrap()
     );
     assert_eq!(
         fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    for entry in fs::read_dir(&folder).unwrap() {
+    let mut dirs: Vec<_> = fs::read_dir(&folder)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    dirs.sort();
+    assert_eq!(dirs, ["admin", "client", "server"]);
+    for dir in ["admin", "client", "server"] {
         assert_eq!(
-            entry.unwrap().metadata().unwrap().permissions().mode() & 0o777,
-            0o600
+            fs::metadata(folder.join(dir)).unwrap().permissions().mode() & 0o777,
+            0o700
         );
+        for entry in fs::read_dir(folder.join(dir)).unwrap() {
+            let entry = entry.unwrap();
+            let mode = if entry.file_name() == "unlock.sh" {
+                0o700
+            } else {
+                0o600
+            };
+            assert_eq!(entry.metadata().unwrap().permissions().mode() & 0o777, mode);
+        }
     }
-    let secret = fs::read_to_string(folder.join("ca.bootstrap-secret")).unwrap();
-    let admin = fs::read_to_string(folder.join("ca.admin-key")).unwrap();
+    let secret = fs::read_to_string(folder.join("admin/ca.bootstrap-secret")).unwrap();
+    let admin = fs::read_to_string(folder.join("admin/ca.admin-key")).unwrap();
     assert!(!String::from_utf8_lossy(&output.stdout).contains(secret.trim()));
     assert!(!String::from_utf8_lossy(&output.stdout).contains(admin.trim()));
-    drop(Database::open(&folder.join("ca.db"), secret.trim()).unwrap());
-    let original = fs::read(folder.join("ca.db")).unwrap();
+    let client_files: Vec<_> = fs::read_dir(folder.join("client"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(client_files.len(), 2);
+    let template = fs::read_to_string(folder.join("client/config.yaml")).unwrap();
+    assert!(template.contains("api_key: REPLACE_ME"));
+    assert!(template.contains("server: https://REPLACE_ME:9443"));
+    for dir in ["server", "client"] {
+        for entry in fs::read_dir(folder.join(dir)).unwrap() {
+            let bytes = fs::read(entry.unwrap().path()).unwrap();
+            for credential in [secret.trim(), admin.trim()] {
+                assert!(
+                    !bytes
+                        .windows(credential.len())
+                        .any(|w| w == credential.as_bytes())
+                );
+            }
+        }
+    }
+    let cert = fs::read(folder.join("server/tls.crt")).unwrap();
+    assert_eq!(fs::read(folder.join("client/tls.crt")).unwrap(), cert);
+    assert_eq!(fs::read(folder.join("admin/tls.crt")).unwrap(), cert);
+    assert!(
+        Command::new("bash")
+            .arg("-n")
+            .arg(folder.join("admin/unlock.sh"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    drop(Database::open(&folder.join("server/ca.db"), secret.trim()).unwrap());
+    let original = fs::read(folder.join("server/ca.db")).unwrap();
     assert!(!init(&folder, false).status.success());
-    assert_eq!(fs::read(folder.join("ca.db")).unwrap(), original);
+    assert_eq!(fs::read(folder.join("server/ca.db")).unwrap(), original);
     assert_eq!(
-        fs::read_to_string(folder.join("ca.bootstrap-secret")).unwrap(),
+        fs::read_to_string(folder.join("admin/ca.bootstrap-secret")).unwrap(),
         secret
     );
     let moved = temp.path().join("moved");
     fs::rename(&folder, &moved).unwrap();
-    let config = ServerConfig::load(&moved.join("server.yaml")).unwrap();
-    assert_eq!(config.database, moved.join("ca.db"));
-    let client = easy_sshca::config::ClientConfig::load(&moved.join("admin.yaml")).unwrap();
+    let config = ServerConfig::load(&moved.join("server/server.yaml")).unwrap();
+    assert_eq!(config.database, moved.join("server/ca.db"));
+    let client = easy_sshca::config::ClientConfig::load(&moved.join("admin/admin.yaml")).unwrap();
     assert_eq!(client.api_key.as_deref(), Some(admin.trim()));
-    assert_eq!(client.tls_ca.as_ref().unwrap(), &moved.join("tls.crt"));
+    assert_eq!(
+        client.tls_ca.as_ref().unwrap(),
+        &moved.join("admin/tls.crt")
+    );
 }
 
 #[test]
@@ -99,7 +148,10 @@ fn printed_command_starts_server_and_generated_client_can_unlock() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let command = stdout.lines().last().unwrap();
+    let command = stdout
+        .lines()
+        .find(|line| line.contains(" server start --config "))
+        .unwrap();
     assert!(command.contains("server start --config"));
     let rpc = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let https = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -123,7 +175,7 @@ fn printed_command_starts_server_and_generated_client_can_unlock() {
     loop {
         let status = Command::new(env!("CARGO_BIN_EXE_easy-sshca"))
             .arg("--config")
-            .arg(folder.join("admin.yaml"))
+            .arg(folder.join("admin/admin.yaml"))
             .args(["server", "status", "--server", &endpoint])
             .output()
             .unwrap();
@@ -137,13 +189,17 @@ fn printed_command_starts_server_and_generated_client_can_unlock() {
         assert!(Instant::now() < deadline, "server never became reachable");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let unlock = Command::new(env!("CARGO_BIN_EXE_easy-sshca"))
-        .arg("--config")
-        .arg(folder.join("admin.yaml"))
-        .args(["server", "unlock", "--server", &endpoint, "--secret-stdin"])
-        .stdin(fs::File::open(folder.join("ca.bootstrap-secret")).unwrap())
+    let relocated_admin = temp.path().join("operator with ' quotes");
+    fs::rename(folder.join("admin"), &relocated_admin).unwrap();
+    let unlock = Command::new(relocated_admin.join("unlock.sh"))
+        .env("EASY_SSHCA_BIN", env!("CARGO_BIN_EXE_easy-sshca"))
+        .current_dir(temp.path())
+        .args(["--server", &endpoint])
         .output()
         .unwrap();
+    let secret = fs::read_to_string(relocated_admin.join("ca.bootstrap-secret")).unwrap();
+    assert!(!String::from_utf8_lossy(&unlock.stdout).contains(secret.trim()));
+    assert!(!String::from_utf8_lossy(&unlock.stderr).contains(secret.trim()));
     assert!(
         unlock.status.success(),
         "{}",
@@ -172,12 +228,12 @@ fn supplied_admin_key_is_copied_into_the_instance() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        fs::read_to_string(folder.join("ca.admin-key"))
+        fs::read_to_string(folder.join("admin/ca.admin-key"))
             .unwrap()
             .trim(),
         &*key
     );
     assert_eq!(fs::read_to_string(source).unwrap(), key.as_str());
-    let client = easy_sshca::config::ClientConfig::load(&folder.join("admin.yaml")).unwrap();
+    let client = easy_sshca::config::ClientConfig::load(&folder.join("admin/admin.yaml")).unwrap();
     assert_eq!(client.api_key.as_deref(), Some(key.as_str()));
 }

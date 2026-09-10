@@ -50,14 +50,7 @@ def main():
 
         try:
             cli(root / "unused.yaml", "server", "init", "--name", "Release smoke", "--folder", str(root / "instance"))
-            root = root / "instance"
-            subprocess.run([
-                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                "-keyout", str(root / "tls.key"), "-out", str(root / "tls.crt"),
-                "-days", "1", "-subj", "/CN=localhost",
-                "-addext", "subjectAltName=DNS:localhost",
-                "-addext", "basicConstraints=critical,CA:FALSE",
-            ], check=True, capture_output=True)
+            root = root / "instance" / "server"
             rpc_port, https_port = free_port(), free_port()
             endpoint = f"https://localhost:{rpc_port}"
             (root / "server.yaml").write_text(
@@ -68,7 +61,7 @@ def main():
             )
             admin_config = root / "operator.yaml"
             cli(admin_config, "configure", "--server", endpoint, "--tls-ca", str(root / "tls.crt"),
-                "--api-key-stdin", secret=(root / "ca.admin-key").read_text())
+                "--api-key-stdin", secret=(root.parent / "admin" / "ca.admin-key").read_text())
             process = start()
             for attempt in range(60):
                 try:
@@ -78,7 +71,7 @@ def main():
                     if process.poll() is not None or attempt == 59:
                         raise
                     time.sleep(0.1)
-            cli(admin_config, "server", "unlock", "--secret-stdin", secret=(root / "ca.bootstrap-secret").read_text())
+            cli(admin_config, "server", "unlock", "--secret-stdin", secret=(root.parent / "admin" / "ca.bootstrap-secret").read_text())
             cli(admin_config, "admin", "zone", "add", "production", "--max-duration", "1h")
             cli(admin_config, "admin", "user", "add", "alice", "--max-duration", "1h")
             cli(admin_config, "admin", "user", "grant-zone", "alice", "production")
@@ -109,7 +102,7 @@ def main():
                     if process.poll() is not None or attempt == 59:
                         raise
                     time.sleep(0.1)
-            cli(admin_config, "server", "unlock", "--secret-stdin", secret=(root / "ca.bootstrap-secret").read_text())
+            cli(admin_config, "server", "unlock", "--secret-stdin", secret=(root.parent / "admin" / "ca.bootstrap-secret").read_text())
             assert cli(user_config, "pub-key")["fingerprint"] == fingerprint
             print("Release smoke passed: init, TLS, unlock, administration, signing, rotation, restart.")
         finally:

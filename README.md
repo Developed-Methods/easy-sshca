@@ -29,12 +29,12 @@ The protobuf contract lives in [proto/easysshca/v1/ca.proto](proto/easysshca/v1/
 
 ```sh
 easy-sshca server init --name "Example SSH CA" --folder ./my-ca
-easy-sshca server start --config ./my-ca/server.yaml
-easy-sshca --config ./my-ca/admin.yaml server unlock --secret-stdin < ./my-ca/ca.bootstrap-secret
+easy-sshca server start --config ./my-ca/server/server.yaml
+./my-ca/admin/unlock.sh
 ```
 
-Initialization creates a private folder containing the database, credentials, TLS files, and server and admin configurations.
-It prints a start command using the generated configuration. Existing folders are refused.
+Initialization creates three private folders: `server/` for runtime files, `client/` for a TLS certificate and example configuration, and `admin/` for administration and unlocking.
+It prints commands to start the server and run the admin unlock script. Existing folders are refused.
 The generated self-signed certificate covers localhost and loopback IP addresses; listeners bind to loopback.
 For remote access, update the listener addresses and supply a certificate for the server hostname.
 

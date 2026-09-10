@@ -529,7 +529,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let start_command = format!(
                 "{} server start --config {}",
                 quote(&executable)?,
-                quote(&folder.join("server.yaml"))?
+                quote(&folder.join("server/server.yaml"))?
             );
             let secret = auth::random_secret();
             let admin = if let Some(p) = admin_api_key_file {
@@ -551,17 +551,30 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 "cannot create initialization folder {}. Choose a new folder; existing folders are never overwritten",
                 folder.display()
             ))?;
-            let db = folder.join("ca.db");
-            let secret_path = folder.join("ca.bootstrap-secret");
-            let admin_path = folder.join("ca.admin-key");
-            let server_config = folder.join("server.yaml");
-            let admin_config = folder.join("admin.yaml");
+            let server_dir = folder.join("server");
+            let client_dir = folder.join("client");
+            let admin_dir = folder.join("admin");
+            let db = server_dir.join("ca.db");
+            let secret_path = admin_dir.join("ca.bootstrap-secret");
+            let admin_path = admin_dir.join("ca.admin-key");
+            let server_config = server_dir.join("server.yaml");
+            let admin_config = admin_dir.join("admin.yaml");
+            let client_config = client_dir.join("config.yaml");
+            let unlock_script = admin_dir.join("unlock.sh");
+            let unlock_command = format!(
+                "EASY_SSHCA_BIN={} {}",
+                quote(&executable)?,
+                quote(&unlock_script)?
+            );
             (|| -> anyhow::Result<()> {
+                for dir in [&server_dir, &client_dir, &admin_dir] {
+                    fs::DirBuilder::new().mode(0o700).create(dir)?;
+                    config::exclusive(&dir.join("tls.crt"), tls.cert.pem().as_bytes(), 0o600)?;
+                }
                 config::exclusive(&secret_path, format!("{}\n", *secret).as_bytes(), 0o600)?;
                 config::exclusive(&admin_path, format!("{}\n", *admin).as_bytes(), 0o600)?;
-                config::exclusive(&folder.join("tls.crt"), tls.cert.pem().as_bytes(), 0o600)?;
                 let private_key = Zeroizing::new(tls.signing_key.serialize_pem());
-                config::exclusive(&folder.join("tls.key"), private_key.as_bytes(), 0o600)?;
+                config::exclusive(&server_dir.join("tls.key"), private_key.as_bytes(), 0o600)?;
                 crate::storage::Database::initialize(&db, &secret, &admin, &name)?;
                 config::exclusive(&server_config, b"version: 1
 database: ca.db
@@ -584,7 +597,20 @@ limits:
                 };
                 let yaml = Zeroizing::new(serde_saphyr::to_string(&client)?);
                 config::exclusive(&admin_config, yaml.as_bytes(), 0o600)?;
-                config::sync_parent(&server_config)?;
+                config::exclusive(&client_config, b"version: 1
+server: https://REPLACE_ME:9443
+api_key: REPLACE_ME
+tls_ca: tls.crt
+defaults:
+  zone: REPLACE_ME
+  public_key: REPLACE_ME
+  duration: 1h
+", 0o600)?;
+                config::exclusive(&unlock_script, include_bytes!("templates/unlock.sh"), 0o700)?;
+                for dir in [&server_dir, &client_dir, &admin_dir] {
+                    config::sync_parent(&dir.join("tls.crt"))?;
+                }
+                config::sync_parent(&server_dir)?;
                 config::sync_parent(&folder)?;
                 Ok(())
             })().with_context(|| format!(
@@ -593,15 +619,17 @@ limits:
             ))?;
             output(
                 json,
-                serde_json::json!({"database":db,"bootstrap_secret_file":secret_path,"admin_key_file":admin_path,"server_config":server_config,"admin_config":admin_config,"start_command":start_command}),
+                serde_json::json!({"database":db,"bootstrap_secret_file":secret_path,"admin_key_file":admin_path,"server_config":server_config,"admin_config":admin_config,"start_command":start_command,"client_config":client_config,"unlock_script":unlock_script,"unlock_command":unlock_command}),
                 &format!(
-                    "Initialized {}\nServer configuration: {}\nAdmin configuration: {}\nBootstrap secret: {}\nAdmin key: {}\nTLS: self-signed for localhost (listeners use loopback)\n\nStart the server:\n{}",
+                    "Initialized {}\nServer configuration: {}\nClient example: {}\nAdmin configuration: {}\nBootstrap secret: {}\nAdmin key: {}\nTLS: self-signed for localhost (listeners use loopback)\n\nStart the server:\n{}\n\nThen unlock it from another terminal:\n{}",
                     folder.display(),
                     server_config.display(),
+                    client_config.display(),
                     admin_config.display(),
                     secret_path.display(),
                     admin_path.display(),
-                    start_command
+                    start_command,
+                    unlock_command
                 ),
             )
         }

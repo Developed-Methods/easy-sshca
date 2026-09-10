@@ -13,27 +13,52 @@ sudo easy-sshca server init \
 sudo chown -R easy-sshca:easy-sshca /var/lib/easy-sshca
 ```
 
-Initialization creates the folder with mode 0700 and its files with mode 0600.
+Initialization creates the folder and its three subfolders with mode 0700.
+Files have mode 0600; the executable unlock script has mode 0700.
 It refuses existing folders, including empty directories.
-The folder contains:
 
-- `ca.db`: encrypted database.
-- `ca.bootstrap-secret`: bootstrap secret for unlocking.
-- `ca.admin-key`: administrator API key.
-- `tls.crt` and `tls.key`: self-signed localhost certificate and private key.
-- `server.yaml`: server configuration.
-- `admin.yaml`: administrator client configuration with the key and TLS trust path.
+```text
+my-ca/
+  server/
+    server.yaml
+    ca.db
+    ca.db.lock
+    tls.crt
+    tls.key
+  client/
+    config.yaml
+    tls.crt
+  admin/
+    admin.yaml
+    ca.admin-key
+    ca.bootstrap-secret
+    tls.crt
+    unlock.sh
+```
 
-Initialization prints a start command that references the new server configuration.
-Configuration paths are relative to the folder, so the folder can be moved.
+The server folder contains all runtime configuration and files.
+The client folder contains no credentials.
+Replace each `REPLACE_ME` in `client/config.yaml` with the server hostname, access-token key, zone, and public-key path.
+The admin configuration contains the admin API key and a relative TLS trust path.
+Each folder can be copied independently.
+
+Initialization prints a start command and an unlock command.
+Run the start command, then run the unlock command in another terminal.
+The unlock script reads the bootstrap secret from its own directory and sends it through stdin.
+It works from any current directory and after moving the admin folder.
+It uses `easy-sshca` from PATH; set `EASY_SSHCA_BIN` to select another executable.
+
+```sh
+easy-sshca server start --config ./my-ca/server/server.yaml
+# In another terminal:
+./my-ca/admin/unlock.sh
+```
+
 The generated listeners use loopback ports 9443 and 9444.
 The certificate covers `localhost`, `127.0.0.1`, and `::1`.
 For remote access, change the listener addresses and provision a certificate for the server's DNS name.
-Update `admin.yaml` with the server URL and appropriate TLS trust file.
-
-Move the bootstrap secret into separate, protected operator storage.
-Keep administrator credentials, including `admin.yaml`, in protected operator storage.
-Update relative TLS paths when moving client configuration separately.
+Update both client configurations and their TLS trust files.
+Keep the admin folder in protected operator storage, separate from the server folder and database backups.
 
 An existing admin key can be supplied through `--admin-api-key-file`.
 Initialization copies it into the new folder's credential file and admin configuration.
@@ -45,7 +70,7 @@ Partial files remain after initialization fails.
 Inspect those files before retrying with a new folder.
 
 Install `packaging/easy-sshca.service` into `/etc/systemd/system/`.
-Its start command uses `/var/lib/easy-sshca/server.yaml`.
+Its start command uses `/var/lib/easy-sshca/server/server.yaml`.
 Adjust that path if you chose another folder.
 
 ```sh
@@ -255,7 +280,7 @@ Stop the service before copying the encrypted database:
 
 ```sh
 sudo systemctl stop easy-sshca
-sudo cp --preserve=mode,ownership /var/lib/easy-sshca/ca.db /protected/backups/ca.db
+sudo cp --preserve=mode,ownership /var/lib/easy-sshca/server/ca.db /protected/backups/ca.db
 sudo systemctl start easy-sshca
 ```
 
@@ -274,8 +299,8 @@ To replace a lost admin key, stop the service and run:
 
 ```sh
 sudo -u easy-sshca easy-sshca server reset-admin \
-  --db /var/lib/easy-sshca/ca.db \
-  --secret-stdin --admin-output /var/lib/easy-sshca/recovered-admin-key
+  --db /var/lib/easy-sshca/server/ca.db \
+  --secret-stdin --admin-output /protected/operator/recovered-admin-key
 ```
 
 Supply the bootstrap secret on stdin.
