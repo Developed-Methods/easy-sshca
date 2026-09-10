@@ -1,4 +1,10 @@
-/target
+/target/
+*.db
+*.db-journal
+*.db.lock
+*.bootstrap-secret
+*.admin-key
+*.rotation.yaml
+*.candidate.yaml
 /.env
-/dev
-sshca-server.crt
+*.key

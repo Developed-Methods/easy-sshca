@@ -1,22 +1,58 @@
-## Easy SSH CA
-A simple tool with a web server for running an SSH-CA with TOTP support.
+# easy-sshca
 
-```
-usage guide to come eventually...
-```
+An SSH certificate authority with a server, admin CLI, and client in one executable.
 
-### Install self-signed certificate and setup nginx
-```
-# generate 10 year certificate
-sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout ./self-signed.key \
-    -out ./self-signed.crt
+Build and install on Linux with Rust, a C compiler, make, and Perl:
+
+```sh
+cargo install --path . --locked
 ```
 
-### Manual sign request over CURL
-```
-curl -X POST http://localhost:1234/sign/jump_host_sea_1/playit_prod/plorio \
-    -H 'Authorization: Api-Key: 12314j2k1l3j21kl' \
-    --data "@./id_ed25519.pub" > id_ed25519-cert.pub
+Initialize a new folder and start the server:
+
+```sh
+easy-sshca server init --name "My SSH CA" --folder ./my-ca
+easy-sshca server start --config ./my-ca/server/server.yaml
 ```
 
+In another terminal, unlock it:
+
+```sh
+./my-ca/admin/unlock.sh
+```
+
+Repeat the unlock after each server restart. Keep the `admin/` folder private; it contains credentials and the bootstrap secret.
+The generated server listens on localhost. For remote access, update the listener addresses, server URL, and TLS certificates.
+
+Create a zone and user, grant access, and save a portable client configuration:
+
+```sh
+easy-sshca --config ./my-ca/admin/admin.yaml admin zone add production
+easy-sshca --config ./my-ca/admin/admin.yaml admin user add alice
+easy-sshca --config ./my-ca/admin/admin.yaml admin user zone grant alice production
+easy-sshca --config ./my-ca/admin/admin.yaml admin access-token add \
+  --user alice --name laptop --max-duration 1h -o alice.yaml
+```
+
+To reuse an existing Ed25519 SSH CA, import its unencrypted OpenSSH private key instead of running `zone add`:
+
+```sh
+easy-sshca --config ./my-ca/admin/admin.yaml admin zone import production --file ./existing_ca
+# Or read the key from stdin:
+easy-sshca --config ./my-ca/admin/admin.yaml admin zone import production --stdin < ./existing_ca
+```
+
+Import creates a new zone and preserves the CA fingerprint. It never replaces an existing zone.
+
+Give `alice.yaml` to the user securely. It includes the access token and TLS trust certificate.
+Use a `.json` filename to export JSON instead.
+
+As the user, generate an SSH key and request a certificate:
+
+```sh
+easy-sshca gen-key --file ./alice_ed25519
+easy-sshca --config alice.yaml sign production --file ./alice_ed25519.pub
+```
+
+SSH hosts must trust the zone's CA through `TrustedUserCAKeys` and have an account matching the username.
+Use `--help` on any command for more options.
