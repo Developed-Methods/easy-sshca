@@ -202,6 +202,12 @@ Names are unique within each user.
 
 Use `admin zone update`, `admin user update`, and `admin access-token update` to change limits.
 Those commands accept `--max-duration` and `--active true|false`.
+Human-readable resource output uses labelled tables with names, readable durations, status, and token ownership.
+Internal UUIDs are hidden by default.
+Add `--verbose` (or `-v`) to show resource UUIDs and success request UUIDs.
+The flag can appear before or after a subcommand.
+Empty lists print `No results.`.
+JSON output retains its existing fields, including UUIDs.
 List commands support `--page-size` and `--page-token`.
 Pages contain at most 100 records.
 

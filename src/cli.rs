@@ -25,6 +25,13 @@ pub struct Cli {
     pub config: Option<PathBuf>,
     #[arg(long, global = true)]
     pub json: bool,
+    #[arg(
+        long,
+        short = 'v',
+        global = true,
+        help = "Show internal UUIDs in human-readable output"
+    )]
+    pub verbose: bool,
     #[command(subcommand)]
     pub command: Action,
 }
@@ -173,6 +180,7 @@ pub struct Page {
     page_token: String,
 }
 #[derive(Args)]
+#[group(id = "ResourceUpdate")]
 pub struct Update {
     #[arg(long)]
     max_duration: Option<String>,
@@ -289,7 +297,7 @@ fn output(json: bool, value: impl Serialize, human: &str) -> anyhow::Result<()> 
     }
     Ok(())
 }
-fn output_reply(json: bool, reply: &Reply) -> anyhow::Result<()> {
+fn output_reply(json: bool, verbose: bool, op: &str, reply: &Reply) -> anyhow::Result<()> {
     if json {
         return output(true, reply, "");
     }
@@ -300,24 +308,54 @@ fn output_reply(json: bool, reply: &Reply) -> anyhow::Result<()> {
     } else if !reply.public_key.is_empty() {
         println!("{}\n{}", reply.public_key, reply.fingerprint);
     } else if !reply.resources.is_empty() {
-        for r in &reply.resources {
-            println!(
-                "{}\t{}\t{}s\t{}\t{}",
-                r.id,
-                r.name,
-                r.max_duration,
-                if r.active { "active" } else { "disabled" },
-                r.user
-            );
-        }
+        println!("{}", resource_table(&reply.resources, verbose));
         if !reply.next_page_token.is_empty() {
             eprintln!("Next page: --page-token {}", reply.next_page_token);
         }
-    } else {
+    } else if matches!(op, "ListZones" | "ListUsers" | "ListAccessTokens") {
+        println!("No results.");
+    } else if verbose && !reply.request_id.is_empty() {
         println!("OK {}", reply.request_id);
+    } else {
+        println!("OK");
     }
+
     Ok(())
 }
+fn resource_table(resources: &[protocol::Resource], verbose: bool) -> comfy_table::Table {
+    let show_user = resources.iter().any(|r| !r.user.is_empty());
+    let mut table = comfy_table::Table::new();
+    table.load_style(comfy_table::presets::UTF8_FULL_CONDENSED);
+    let mut header = vec!["Name", "Max duration", "Status"];
+    if show_user {
+        header.push("User");
+    }
+    if verbose {
+        header.push("ID");
+    }
+    table.set_header(header);
+    for resource in resources {
+        let mut row = vec![
+            resource.name.clone(),
+            humantime::format_duration(Duration::from_secs(resource.max_duration)).to_string(),
+            if resource.active {
+                "active"
+            } else {
+                "disabled"
+            }
+            .into(),
+        ];
+        if show_user {
+            row.push(resource.user.clone());
+        }
+        if verbose {
+            row.push(resource.id.clone());
+        }
+        table.add_row(row);
+    }
+    table
+}
+
 fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> {
     let mut c = if path.exists() {
         ClientConfig::load(path)?
@@ -486,6 +524,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         .map(Ok)
         .unwrap_or_else(config::default_path)?;
     let json = cli.json;
+    let verbose = cli.verbose;
     if cli.config.is_some()
         && !path.exists()
         && !matches!(
@@ -684,7 +723,7 @@ defaults:
             command: Server::Status { connection },
         } => {
             let c = load(&path, connection)?;
-            output_reply(json, &rpc(&c, "GetStatus", command()).await?)
+            output_reply(json, verbose, "", &rpc(&c, "GetStatus", command()).await?)
         }
         Action::Server {
             command:
@@ -696,7 +735,7 @@ defaults:
             let c = load(&path, connection)?;
             let mut cmd = command();
             cmd.secret = read_secret(secret_stdin, "Bootstrap secret: ")?.to_string();
-            output_reply(json, &rpc(&c, "Unlock", cmd).await?)
+            output_reply(json, verbose, "", &rpc(&c, "Unlock", cmd).await?)
         }
         Action::Configure {
             server,
@@ -786,7 +825,7 @@ defaults:
             cmd.zone = zone
                 .or(c.defaults.zone.clone())
                 .context("zone is required")?;
-            output_reply(json, &rpc(&c, "GetPublicKey", cmd).await?)
+            output_reply(json, verbose, "", &rpc(&c, "GetPublicKey", cmd).await?)
         }
         Action::Sign {
             zone,
@@ -851,13 +890,18 @@ defaults:
             let c = load(&path, ConnectionArgs::default())?;
             let enrollment = rpc(&c, "BeginTotpEnrollment", command()).await?;
             if json {
-                return output_reply(true, &enrollment);
+                return output_reply(true, verbose, "", &enrollment);
             }
             print_enrollment_qr(&enrollment.otpauth_uri)?;
             println!("\n{}\n", enrollment.secret);
             let mut cmd = command();
             cmd.totp = read_secret(false, "Confirm TOTP code: ")?.to_string();
-            output_reply(false, &rpc(&c, "ConfirmTotpEnrollment", cmd).await?)
+            output_reply(
+                false,
+                verbose,
+                "",
+                &rpc(&c, "ConfirmTotpEnrollment", cmd).await?,
+            )
         }
         Action::Totp {
             command: Totp::Confirm { totp_stdin },
@@ -865,18 +909,25 @@ defaults:
             let c = load(&path, ConnectionArgs::default())?;
             let mut cmd = command();
             cmd.totp = read_secret(totp_stdin, "Confirm TOTP code: ")?.to_string();
-            output_reply(json, &rpc(&c, "ConfirmTotpEnrollment", cmd).await?)
+            output_reply(
+                json,
+                verbose,
+                "",
+                &rpc(&c, "ConfirmTotpEnrollment", cmd).await?,
+            )
         }
-        Action::RotateToken { totp_stdin } => rotate(&path, "RotateToken", totp_stdin, json).await,
+        Action::RotateToken { totp_stdin } => {
+            rotate(&path, "RotateToken", totp_stdin, json, verbose).await
+        }
         Action::Admin {
             command: Admin::Key {
                 command: AdminKey::RotateAdmin,
             },
-        } => rotate(&path, "RotateAdminKey", false, json).await,
+        } => rotate(&path, "RotateAdminKey", false, json, verbose).await,
         Action::Admin { command: admin } => {
             let c = load(&path, ConnectionArgs::default())?;
             let (op, cmd) = admin_command(admin)?;
-            output_reply(json, &rpc(&c, op, cmd).await?)
+            output_reply(json, verbose, op, &rpc(&c, op, cmd).await?)
         }
     }
 }
@@ -1045,7 +1096,13 @@ struct PendingRotation {
     command: Command,
     config: ClientConfig,
 }
-async fn rotate(path: &Path, op: &str, totp_stdin: bool, json: bool) -> anyhow::Result<()> {
+async fn rotate(
+    path: &Path,
+    op: &str,
+    totp_stdin: bool,
+    json: bool,
+    verbose: bool,
+) -> anyhow::Result<()> {
     let _lock = crate::storage::lock(path)?;
     let current = ClientConfig::load(path)?;
     let pending_path = path.with_extension("rotation.yaml");
@@ -1127,7 +1184,7 @@ async fn rotate(path: &Path, op: &str, totp_stdin: bool, json: bool) -> anyhow::
     config::sync_parent(path)?;
     fs::remove_file(&pending_path)?;
     config::sync_parent(path)?;
-    output_reply(json, &reply)
+    output_reply(json, verbose, "", &reply)
 }
 
 fn print_enrollment_qr(uri: &str) -> anyhow::Result<()> {

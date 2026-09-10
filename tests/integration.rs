@@ -911,3 +911,70 @@ async fn crash_recovery_limits_and_failed_trust_install() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_tables_hide_uuids_unless_verbose() {
+    let s = Server::new().await;
+    s.unlock().await;
+    let path = s.dir.path().join("table-admin.yaml");
+    config::exclusive(
+        &path,
+        serde_saphyr::to_string(&s.client).unwrap().as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let human = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_easy-sshca"))
+            .arg("--config")
+            .arg(&path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert_eq!(human(&["admin", "zone", "list"]).trim(), "No results.");
+    let _user = s.user().await;
+    let reply = cli::rpc(&s.client, "ListZones", cmd()).await.unwrap();
+    let id = &reply.resources[0].id;
+    let table = human(&["admin", "zone", "list"]);
+    for value in [
+        "Name",
+        "Max duration",
+        "Status",
+        "production",
+        "1day",
+        "active",
+    ] {
+        assert!(table.contains(value), "missing {value}: {table}");
+    }
+    assert!(!table.contains(id));
+    assert!(!table.contains("ID"));
+    assert!(!table.contains('\t'));
+    assert!(human(&["admin", "zone", "list", "--verbose"]).contains(id));
+    assert!(human(&["-v", "admin", "zone", "list"]).contains(id));
+    let tokens = human(&["admin", "access-token", "list", "--user", "alice"]);
+    assert!(tokens.contains("User") && tokens.contains("alice") && tokens.contains("laptop"));
+    assert_eq!(
+        human(&["admin", "zone", "update", "production", "--active", "false"]).trim(),
+        "OK"
+    );
+    let verbose = human(&[
+        "admin",
+        "zone",
+        "update",
+        "production",
+        "--active",
+        "true",
+        "--verbose",
+    ]);
+    auth::request_id(verbose.trim().strip_prefix("OK ").unwrap()).unwrap();
+    let output = run_cli(&path, &["admin", "zone", "list"], None);
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["result"]["resources"][0]["id"], *id);
+}
