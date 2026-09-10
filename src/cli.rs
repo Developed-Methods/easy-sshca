@@ -248,6 +248,12 @@ pub enum AccessToken {
         name: String,
         #[arg(long)]
         max_duration: String,
+        #[arg(
+            short,
+            long,
+            help = "Save a self-contained client config (.json for JSON, otherwise YAML)"
+        )]
+        output: Option<PathBuf>,
     },
     List {
         #[arg(long)]
@@ -380,6 +386,7 @@ fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> 
             server: server.clone(),
             api_key: None,
             tls_ca: None,
+            tls_ca_pem: None,
             defaults: Default::default(),
         }
     } else {
@@ -390,6 +397,7 @@ fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> 
     }
     if let Some(p) = overrides.tls_ca {
         c.tls_ca = Some(config::resolve(&p, &std::env::current_dir()?)?);
+        c.tls_ca_pem = None;
     }
     c.validate()?;
     Ok(c)
@@ -397,8 +405,8 @@ fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> 
 pub async fn channel(c: &ClientConfig) -> anyhow::Result<Channel> {
     c.validate()?;
     let mut tls = ClientTlsConfig::new().with_native_roots();
-    if let Some(ca) = &c.tls_ca {
-        tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(fs::read(ca)?));
+    if let Some(pem) = c.tls_pem()? {
+        tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem));
     }
     Ok(Channel::from_shared(c.server.clone())?
         .tls_config(tls)?
@@ -652,6 +660,7 @@ limits:
                     server: "https://localhost:9443".into(),
                     api_key: Some(admin.to_string()),
                     tls_ca: Some(PathBuf::from("tls.crt")),
+                    tls_ca_pem: None,
                     defaults: Default::default(),
                 };
                 let yaml = Zeroizing::new(serde_saphyr::to_string(&client)?);
@@ -795,6 +804,7 @@ defaults:
                     Some(key.to_string())
                 },
                 tls_ca: tls_ca.map(|p| config::resolve(&p, &cwd)).transpose()?,
+                tls_ca_pem: None,
                 defaults: config::Defaults {
                     zone,
                     public_key: public_key.map(|p| config::resolve(&p, &cwd)).transpose()?,
@@ -805,10 +815,7 @@ defaults:
             if let Some(p) = &c.tls_ca {
                 fs::read(p).context("cannot read TLS CA")?;
             }
-            config::atomic(
-                &path,
-                Zeroizing::new(serde_saphyr::to_string(&c)?).as_bytes(),
-            )?;
+            config::atomic(&path, c.serialize_for(&path)?.as_bytes())?;
             output(
                 json,
                 serde_json::json!({"config":path}),
@@ -946,11 +953,84 @@ defaults:
         } => rotate(&path, "RotateAdminKey", false, json, verbose).await,
         Action::Admin { command: admin } => {
             let c = load(&path, ConnectionArgs::default())?;
+            let export = match &admin {
+                Admin::AccessToken {
+                    command: AccessToken::Add { output, .. },
+                } => output.clone(),
+                _ => None,
+            };
             let (op, cmd) = admin_command(admin)?;
-            output_reply(json, verbose, op, &rpc(&c, op, cmd).await?)
+            if let Some(destination) = export {
+                export_access_token(&c, cmd, &destination, json).await
+            } else {
+                output_reply(json, verbose, op, &rpc(&c, op, cmd).await?)
+            }
         }
     }
 }
+async fn export_access_token(
+    admin: &ClientConfig,
+    cmd: Command,
+    path: &Path,
+    json: bool,
+) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => bail!(
+            "output already exists: {}; choose a new file",
+            path.display()
+        ),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("cannot inspect output {}", path.display()));
+        }
+    }
+    let mut client = ClientConfig {
+        version: 1,
+        server: admin.server.clone(),
+        api_key: None,
+        tls_ca: None,
+        tls_ca_pem: admin.tls_pem()?,
+        defaults: config::Defaults {
+            duration: Some(
+                humantime::format_duration(Duration::from_secs(cmd.max_duration)).to_string(),
+            ),
+            ..Default::default()
+        },
+    };
+    let mut staged = config::staged(path, b"")?;
+    let mut reply = rpc(admin, "CreateAccessToken", cmd).await?;
+    client.api_key = Some(std::mem::take(&mut reply.api_key));
+    let write = (|| -> anyhow::Result<()> {
+        let text = client.serialize_for(path)?;
+        staged.write_all(text.as_bytes())?;
+        staged.as_file().sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write {
+        return Err(error).context(
+            "token created but configuration could not be written; revoke the token and retry",
+        );
+    }
+    if let Err(error) = staged.persist_noclobber(path) {
+        let (_, recovery) = error.file.keep().context(
+            "token created but configuration could not be retained; revoke the token and retry",
+        )?;
+        return Err(error.error).with_context(|| {
+            format!(
+                "token created; client configuration retained at {}. Could not install it at {}",
+                recovery.display(),
+                path.display()
+            )
+        });
+    }
+    config::sync_parent(path).context("client configuration saved, but directory sync failed")?;
+    output(
+        json,
+        serde_json::json!({"config":path}),
+        &format!("Client configuration saved to {}", path.display()),
+    )
+}
+
 fn totp_required(e: &anyhow::Error) -> bool {
     use prost::Message;
     e.downcast_ref::<tonic::Status>()
@@ -1083,6 +1163,7 @@ fn admin_command(admin: Admin) -> anyhow::Result<(&'static str, Command)> {
                     user,
                     name,
                     max_duration,
+                    ..
                 },
         } => {
             c.user = user;
@@ -1180,7 +1261,7 @@ async fn rotate(
     };
     config::atomic(
         &candidate_path,
-        Zeroizing::new(serde_saphyr::to_string(&pending.config)?).as_bytes(),
+        pending.config.serialize_for(path)?.as_bytes(),
     )?;
     let mut result = rpc(&current, op, pending.command.clone()).await;
     if result.as_ref().is_err_and(|e| {

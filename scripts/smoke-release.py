@@ -83,6 +83,17 @@ def main():
             cli(user_config, "gen-key", "--file", str(root / "id_ed25519"))
             signed = cli(user_config, "sign", "--file", str(root / "id_ed25519.pub"), "--duration", "1d")
             assert signed["effective_duration"] == 1800
+            exported = root.parent / "client" / "portable.json"
+            saved = cli(admin_config, "admin", "access-token", "add", "--user", "alice",
+                        "--name", "portable", "--max-duration", "15m", "--output", str(exported))
+            assert saved == {"config": str(exported)}
+            portable = json.loads(exported.read_text())
+            assert "tls_ca" not in portable and "BEGIN CERTIFICATE" in portable["tls_ca_pem"]
+            assert portable["api_key"] != token["api_key"]
+            portable_signed = cli(exported, "sign", "production", "--file", str(root / "id_ed25519.pub"), "--force")
+            assert portable_signed["effective_duration"] == 900
+            cli(exported, "rotate-token")
+            assert json.loads(exported.read_text())["tls_ca_pem"] == portable["tls_ca_pem"]
             subprocess.run(["ssh-keygen", "-Lf", signed["certificate_file"]], check=True, capture_output=True)
             fingerprint = cli(user_config, "pub-key")["fingerprint"]
             fetched = subprocess.run([

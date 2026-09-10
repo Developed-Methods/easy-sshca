@@ -53,6 +53,7 @@ impl Server {
                 server: format!("https://localhost:{rpc}"),
                 api_key: Some(admin),
                 tls_ca: Some(cert),
+                tls_ca_pem: None,
                 defaults: Default::default(),
             },
             secret,
@@ -1034,4 +1035,171 @@ async fn nested_user_zone_commands_grant_list_and_revoke() {
     ] {
         assert!(!run_cli(&path, &args, None).status.success());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exported_token_configs_are_portable_and_support_rotation() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Server::new().await;
+    s.unlock().await;
+    let _user = s.user().await;
+    let admin_path = s.dir.path().join("export-admin.yaml");
+    config::exclusive(
+        &admin_path,
+        serde_saphyr::to_string(&s.client).unwrap().as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let portable = tempfile::tempdir().unwrap();
+    for (extension, flag) in [("yaml", "-o"), ("json", "--output")] {
+        let path = s.dir.path().join(format!("export.{extension}"));
+        let output = run_cli(
+            &admin_path,
+            &[
+                "admin",
+                "access-token",
+                "add",
+                "--user",
+                "alice",
+                "--name",
+                extension,
+                "--max-duration",
+                "30m",
+                flag,
+                path.to_str().unwrap(),
+            ],
+            None,
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["result"]["config"], path.to_str().unwrap());
+        assert_eq!(fs_mode(&path), 0o600);
+        let text = std::fs::read_to_string(&path).unwrap();
+        if extension == "json" {
+            serde_json::from_str::<serde_json::Value>(&text).unwrap();
+        }
+        let client = ClientConfig::load(&path).unwrap();
+        assert!(client.tls_ca.is_none());
+        assert!(
+            client
+                .tls_ca_pem
+                .as_ref()
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
+        assert!(client.defaults.public_key.is_none());
+        assert!(client.defaults.zone.is_none());
+        assert_eq!(client.defaults.duration.as_deref(), Some("30m"));
+        let key = client.api_key.as_ref().unwrap();
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(key));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(key));
+        assert!(!text.contains(s.client.api_key.as_ref().unwrap()));
+        let moved = portable.path().join(format!("client.{extension}"));
+        std::fs::rename(&path, &moved).unwrap();
+        let moved_client = ClientConfig::load(&moved).unwrap();
+        assert!(
+            cli::rpc(
+                &moved_client,
+                "GetPublicKey",
+                Command {
+                    zone: "production".into(),
+                    ..cmd()
+                }
+            )
+            .await
+            .is_ok()
+        );
+        let rotate = run_cli(&moved, &["rotate-token"], None);
+        assert!(
+            rotate.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rotate.stderr)
+        );
+        if extension == "json" {
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&moved).unwrap())
+                .unwrap();
+        }
+        let rotated = ClientConfig::load(&moved).unwrap();
+        assert_ne!(rotated.api_key, moved_client.api_key);
+        assert_eq!(rotated.tls_ca_pem, moved_client.tls_ca_pem);
+        assert!(
+            cli::rpc(&rotated, "BeginTotpEnrollment", cmd())
+                .await
+                .is_ok()
+        );
+        assert!(
+            cli::rpc(
+                &rotated,
+                "GetPublicKey",
+                Command {
+                    zone: "production".into(),
+                    ..cmd()
+                }
+            )
+            .await
+            .is_ok()
+        );
+    }
+    fn fs_mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn token_export_checks_destination_before_creating_credentials() {
+    let s = Server::new().await;
+    s.unlock().await;
+    let _user = s.user().await;
+    let admin_path = s.dir.path().join("inline-admin.json");
+    let mut inline_admin = s.client.clone();
+    inline_admin.tls_ca_pem = inline_admin.tls_pem().unwrap();
+    inline_admin.tls_ca = None;
+    config::exclusive(
+        &admin_path,
+        inline_admin.serialize_for(&admin_path).unwrap().as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let destination = s.dir.path().join("existing.yaml");
+    config::exclusive(&destination, b"keep this file", 0o600).unwrap();
+    let args = [
+        "admin",
+        "access-token",
+        "add",
+        "--user",
+        "alice",
+        "--name",
+        "exported",
+        "--max-duration",
+        "1h",
+        "--output",
+        destination.to_str().unwrap(),
+    ];
+    assert!(!run_cli(&admin_path, &args, None).status.success());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"keep this file");
+    let before = cli::rpc(
+        &s.client,
+        "ListAccessTokens",
+        Command {
+            user: "alice".into(),
+            ..cmd()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(before.resources.len(), 1);
+    std::fs::remove_file(&destination).unwrap();
+    let output = run_cli(&admin_path, &args, None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let exported = ClientConfig::load(&destination).unwrap();
+    assert_eq!(exported.tls_ca_pem, inline_admin.tls_ca_pem);
+    assert!(exported.tls_ca.is_none());
 }

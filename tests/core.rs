@@ -657,3 +657,53 @@ fn user_zone_listing_is_scoped_and_paginated() {
         Code::NotFound
     );
 }
+
+#[test]
+fn client_config_accepts_inline_tls_and_rejects_ambiguous_trust() {
+    let dir = tempfile::tempdir().unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+        .unwrap()
+        .cert
+        .pem();
+    let mut client = config::ClientConfig {
+        version: 1,
+        server: "https://localhost:9443".into(),
+        api_key: None,
+        tls_ca: None,
+        tls_ca_pem: Some(cert.clone()),
+        defaults: Default::default(),
+    };
+    for extension in ["yaml", "json"] {
+        let path = dir.path().join(format!("client.{extension}"));
+        config::exclusive(
+            &path,
+            client.serialize_for(&path).unwrap().as_bytes(),
+            0o600,
+        )
+        .unwrap();
+        assert_eq!(
+            config::ClientConfig::load(&path)
+                .unwrap()
+                .tls_pem()
+                .unwrap(),
+            Some(cert.clone())
+        );
+    }
+    client.tls_ca = Some("missing.pem".into());
+    assert!(
+        client
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("only one")
+    );
+    client.tls_ca = None;
+    client.tls_ca_pem = Some(String::new());
+    assert!(client.validate().is_err());
+    client.tls_ca_pem = None;
+    assert_eq!(client.tls_pem().unwrap(), None);
+    let path = dir.path().join("invalid.json");
+    config::exclusive(&path, br#"{"version": 1, "server": "https://localhost:9443", "api_key": "SECRET_CANARY", "unknown": 1}"#, 0o600).unwrap();
+    let error = config::ClientConfig::load(&path).err().unwrap().to_string();
+    assert!(!error.contains("SECRET_CANARY"));
+}

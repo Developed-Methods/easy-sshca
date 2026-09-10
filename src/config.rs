@@ -17,6 +17,8 @@ pub struct ClientConfig {
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ca_pem: Option<String>,
     #[serde(default)]
     pub defaults: Defaults,
 }
@@ -127,6 +129,16 @@ impl ClientConfig {
             bail!("unsupported config version; use version 1 or upgrade easy-sshca");
         }
         validate_server(&self.server)?;
+        if self.tls_ca.is_some() && self.tls_ca_pem.is_some() {
+            bail!("configure only one of tls_ca and tls_ca_pem");
+        }
+        if self
+            .tls_ca_pem
+            .as_ref()
+            .is_some_and(|pem| pem.trim().is_empty())
+        {
+            bail!("tls_ca_pem must contain a PEM certificate");
+        }
         if let Some(x) = &self.api_key {
             crate::auth::key(x)?;
         }
@@ -138,11 +150,41 @@ impl ClientConfig {
         }
         Ok(())
     }
+    pub fn serialize_for(&self, path: &Path) -> anyhow::Result<zeroize::Zeroizing<String>> {
+        let text = if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
+            serde_json::to_string_pretty(self)?
+        } else {
+            serde_saphyr::to_string(self)?
+        };
+        Ok(zeroize::Zeroizing::new(text))
+    }
+    pub fn tls_pem(&self) -> anyhow::Result<Option<String>> {
+        self.validate()?;
+        if let Some(path) = &self.tls_ca {
+            Ok(Some(fs::read_to_string(path).with_context(|| {
+                format!("cannot read TLS CA certificate {}", path.display())
+            })?))
+        } else {
+            Ok(self.tls_ca_pem.clone())
+        }
+    }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text=zeroize::Zeroizing::new(secure_read(path).with_context(||format!("cannot load {}; run easy-sshca configure --server https://HOST:9443 --api-key-stdin",path.display()))?);
-        let mut config: Self = serde_saphyr::from_str(&text).map_err(|_| {
-            anyhow::anyhow!("invalid client YAML: check fields, duplicate keys and types")
-        })?;
+        let mut config: Self = if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
+            serde_json::from_str(&text).map_err(|_| {
+                anyhow::anyhow!("invalid client JSON: check fields, duplicate keys and types")
+            })?
+        } else {
+            serde_saphyr::from_str(&text).map_err(|_| {
+                anyhow::anyhow!("invalid client YAML: check fields, duplicate keys and types")
+            })?
+        };
         config.validate()?;
         let parent = path.parent().unwrap_or(Path::new("."));
         if let Some(x) = &mut config.tls_ca {

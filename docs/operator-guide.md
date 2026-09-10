@@ -119,6 +119,21 @@ easy-sshca --config ~/.config/easy-sshca/admin.yaml admin access-token add \
 ```
 
 The final command prints the token's API key once.
+To save a portable client configuration instead, supply `-o` or `--output`:
+
+```sh
+easy-sshca --config ~/.config/easy-sshca/admin.yaml admin access-token add \
+  --user alice --name laptop --max-duration 1h --output alice.yaml
+easy-sshca --config alice.yaml pub-key production
+```
+
+Use a `.json` filename for JSON; other filenames produce YAML.
+The file contains the server URL, new API key, token duration default, and inline TLS trust when configured.
+It does not copy the administrator's key, zone default, or local SSH key paths.
+Select a zone when signing or add your own `defaults.zone`.
+Output files use mode 0600 and existing files are refused.
+With `--output`, stdout reports the saved path instead of the API key.
+If installation fails after token creation, the error identifies a retained configuration or instructs you to revoke the token.
 Transfer it through your approved secret channel.
 Avoid recording that command's output in CI logs.
 If creation succeeds but its response is lost, remove the token and create another.
@@ -168,7 +183,20 @@ defaults:
   duration: 1h
 ```
 
-Omit `tls_ca` for operating-system trust roots.
+Client configuration supports YAML and JSON (`.json` files).
+For a configuration without a separate certificate file, replace `tls_ca` with `tls_ca_pem`:
+
+```yaml
+tls_ca_pem: |
+  -----BEGIN CERTIFICATE-----
+  REPLACE_WITH_PEM_CERTIFICATE_CONTENT
+  -----END CERTIFICATE-----
+```
+
+Use either `tls_ca` or `tls_ca_pem`, not both.
+Inline PEM may contain a certificate bundle.
+Omit both fields for operating-system trust roots.
+Token rotation preserves inline TLS and the configuration's YAML or JSON format.
 Omit `api_key` for public CA discovery and status.
 Relative file paths resolve against the configuration directory.
 A leading `~/` expands to the home directory.
