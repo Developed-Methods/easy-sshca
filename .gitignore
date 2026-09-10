@@ -1,6 +1,4 @@
 /target/
-/dist/
-/*.cdx.json
 *.db
 *.db-journal
 *.db.lock
@@ -10,4 +8,3 @@
 *.candidate.yaml
 /.env
 *.key
-__pycache__/

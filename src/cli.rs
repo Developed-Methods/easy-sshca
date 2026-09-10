@@ -162,6 +162,13 @@ pub enum Zone {
         #[arg(long, default_value = "1d")]
         max_duration: String,
     },
+    Import {
+        name: String,
+        #[arg(long, default_value = "1d")]
+        max_duration: String,
+        #[command(flatten)]
+        source: ImportKeySource,
+    },
     List {
         #[command(flatten)]
         page: Page,
@@ -171,6 +178,18 @@ pub enum Zone {
         #[command(flatten)]
         update: Update,
     },
+}
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+pub struct ImportKeySource {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Read an unencrypted Ed25519 OpenSSH private key (use - for stdin)"
+    )]
+    file: Option<PathBuf>,
+    #[arg(long, help = "Read the private key from stdin")]
+    stdin: bool,
 }
 #[derive(Args, Default)]
 pub struct Page {
@@ -441,6 +460,11 @@ pub async fn rpc(c: &ClientConfig, op: &str, cmd: Command) -> anyhow::Result<Rep
                 .create_zone(request)
                 .await?
         }
+        "ImportZone" => {
+            protocol::admin_service_client::AdminServiceClient::new(channel)
+                .import_zone(request)
+                .await?
+        }
         "ListZones" => {
             protocol::admin_service_client::AdminServiceClient::new(channel)
                 .list_zones(request)
@@ -674,7 +698,14 @@ defaults:
   public_key: REPLACE_ME
   duration: 1h
 ", 0o600)?;
-                config::exclusive(&unlock_script, include_bytes!("templates/unlock.sh"), 0o700)?;
+                config::exclusive(&unlock_script, br#"#!/usr/bin/env bash
+set +x
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "${EASY_SSHCA_BIN:-easy-sshca}" --config "$script_dir/admin.yaml" \
+    server unlock --secret-stdin "$@" < "$script_dir/ca.bootstrap-secret"
+"#, 0o700)?;
                 for dir in [&server_dir, &client_dir, &admin_dir] {
                     config::sync_parent(&dir.join("tls.crt"))?;
                 }
@@ -1076,6 +1107,25 @@ fn admin_command(admin: Admin) -> anyhow::Result<(&'static str, Command)> {
             c.name = name;
             c.max_duration = auth::parse_duration(&max_duration)?;
             "CreateZone"
+        }
+        Admin::Zone {
+            command:
+                Zone::Import {
+                    name,
+                    max_duration,
+                    source,
+                },
+        } => {
+            auth::name(&name)?;
+            c.name = name;
+            c.max_duration = auth::parse_duration(&max_duration)?;
+            let pem = match source.file {
+                Some(path) if path != Path::new("-") => Zeroizing::new(config::secure_read(&path)?),
+                _ => read_secret(true, "")?,
+            };
+            crate::signing::import(&pem)?;
+            c.secret = pem.to_string();
+            "ImportZone"
         }
         Admin::Zone {
             command: Zone::List { page },

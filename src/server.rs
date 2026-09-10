@@ -402,6 +402,12 @@ impl protocol::admin_service_server::AdminService for State {
     ) -> std::result::Result<Response<Reply>, Status> {
         self.rpc("CreateZone", request).await
     }
+    async fn import_zone(
+        &self,
+        request: Request<Command>,
+    ) -> std::result::Result<Response<Reply>, Status> {
+        self.rpc("ImportZone", request).await
+    }
     async fn list_zones(
         &self,
         request: Request<Command>,

@@ -707,3 +707,132 @@ fn client_config_accepts_inline_tls_and_rejects_ambiguous_trust() {
     let error = config::ClientConfig::load(&path).err().unwrap().to_string();
     assert!(!error.contains("SECRET_CANARY"));
 }
+
+#[test]
+fn imported_ca_preserves_identity_signs_and_survives_restart() {
+    let mut f = Fixture::new();
+    let ca = signing::generate("existing CA").unwrap();
+    let pem = ca.to_openssh(ssh_key::LineEnding::LF).unwrap();
+    let import = Command {
+        name: "imported".into(),
+        secret: pem.to_string(),
+        max_duration: 3600,
+        ..cmd()
+    };
+    let result = f.db.execute("ImportZone", &f.admin, &import).unwrap();
+    assert_eq!(
+        result.resources[0].fingerprint,
+        ca.fingerprint(ssh_key::HashAlg::Sha256).to_string()
+    );
+    assert_eq!(
+        f.db.execute("ImportZone", &f.admin, &import).unwrap(),
+        result
+    );
+    let mut duplicate = import.clone();
+    duplicate.request_id = auth::id();
+    duplicate.secret = signing::generate("different")
+        .unwrap()
+        .to_openssh(ssh_key::LineEnding::LF)
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        f.db.execute("ImportZone", &f.admin, &duplicate)
+            .unwrap_err()
+            .code,
+        Code::AlreadyExists
+    );
+    let public =
+        f.db.execute(
+            "GetPublicKey",
+            "",
+            &Command {
+                zone: "imported".into(),
+                ..cmd()
+            },
+        )
+        .unwrap();
+    assert_eq!(public.fingerprint, result.resources[0].fingerprint);
+    f.db.execute(
+        "GrantZone",
+        &f.admin,
+        &Command {
+            user: "alice".into(),
+            zone: "imported".into(),
+            ..cmd()
+        },
+    )
+    .unwrap();
+    let signing_request = Command {
+        zone: "imported".into(),
+        public_key: signing::generate("user")
+            .unwrap()
+            .public_key()
+            .to_openssh()
+            .unwrap(),
+        duration: 60,
+        ..cmd()
+    };
+    let signed =
+        f.db.execute("SignCertificate", &f.token, &signing_request)
+            .unwrap();
+    let certificate = ssh_key::Certificate::from_openssh(&signed.certificate).unwrap();
+    certificate
+        .validate_at(auth::now(), [&ca.fingerprint(ssh_key::HashAlg::Sha256)])
+        .unwrap();
+    drop(f.db);
+    let mut db = Database::open(&f.dir.path().join("ca.db"), &f.secret).unwrap();
+    let signed = db
+        .execute(
+            "SignCertificate",
+            &f.token,
+            &Command {
+                request_id: auth::id(),
+                ..signing_request
+            },
+        )
+        .unwrap();
+    ssh_key::Certificate::from_openssh(&signed.certificate)
+        .unwrap()
+        .validate_at(auth::now(), [&ca.fingerprint(ssh_key::HashAlg::Sha256)])
+        .unwrap();
+    let disk = std::fs::read(f.dir.path().join("ca.db")).unwrap();
+    for line in pem
+        .lines()
+        .filter(|line| !line.starts_with("-----") && !line.is_empty())
+    {
+        assert!(
+            !disk
+                .windows(line.len())
+                .any(|window| window == line.as_bytes())
+        );
+    }
+}
+
+#[test]
+fn invalid_imports_do_not_create_zones() {
+    let mut f = Fixture::new();
+    for secret in [
+        "not a private key".to_string(),
+        "x".repeat(4097),
+        signing::generate("public only")
+            .unwrap()
+            .public_key()
+            .to_openssh()
+            .unwrap(),
+    ] {
+        let result = f.db.execute(
+            "ImportZone",
+            &f.admin,
+            &Command {
+                name: "invalid".into(),
+                max_duration: 60,
+                secret,
+                ..cmd()
+            },
+        );
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    }
+    let zones = f.db.execute("ListZones", &f.admin, &cmd()).unwrap();
+    assert_eq!(zones.resources.len(), 1);
+    assert_eq!(zones.resources[0].name, "production");
+}

@@ -315,11 +315,15 @@ impl Database {
         let now = auth::now();
         let mut new_ca = None;
         match op {
-            "CreateZone" => {
+            "CreateZone" | "ImportZone" => {
                 auth::name(&c.name)?;
                 auth::duration(c.max_duration)?;
                 let id = auth::id();
-                let ca = crate::signing::generate(&c.name)?;
+                let ca = if op == "ImportZone" {
+                    crate::signing::import(&c.secret)?
+                } else {
+                    crate::signing::generate(&c.name)?
+                };
                 let pem = ca.to_openssh(ssh_key::LineEnding::LF)?;
                 let public = ca.public_key().to_openssh()?;
                 let fingerprint = ca
@@ -599,6 +603,7 @@ pub fn is_admin(op: &str) -> bool {
     matches!(
         op,
         "CreateZone"
+            | "ImportZone"
             | "ListZones"
             | "UpdateZone"
             | "CreateUser"

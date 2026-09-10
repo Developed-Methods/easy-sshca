@@ -1,4 +1,4 @@
 [advisories]
 # ssh-key's optional RSA dependency appears in Cargo.lock but is not compiled.
-# scripts/check-supply-chain.sh fails if any target enables RSA.
+# The verification workflow fails if any target enables RSA.
 ignore = ["RUSTSEC-2023-0071"]

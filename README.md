@@ -1,42 +1,58 @@
 # easy-sshca
 
-An SSH certificate authority with named zones, user-owned access tokens, and self-service TOTP enrollment.
-Each zone has an Ed25519 CA.
-The server stores identities, credentials, CA keys, and issuance records in SQLCipher.
-Every restart requires an operator to unlock the database over verified TLS.
+An SSH certificate authority with a server, admin CLI, and client in one executable.
 
-The executable includes the server, administrator commands, and user client.
-Tonic serves the versioned gRPC API on port 9443.
-HTTPS serves public CA files and health endpoints on port 9444.
-Signing uses `ssh-key` in memory.
-
-Build and test on Linux:
+Build and install on Linux with Rust, a C compiler, make, and Perl:
 
 ```sh
-cargo build --locked
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
+cargo install --path . --locked
 ```
 
-Native builds require a C compiler, make, and Perl.
-SQLCipher, OpenSSL, and protoc are bundled.
-Release builds target `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
-
-Start with the [operator guide](docs/operator-guide.md).
-The [verification report](docs/verification.md) records the local checks.
-The [implementation plan](docs/implementation-plan.html) records the design requirements.
-The protobuf contract lives in [proto/easysshca/v1/ca.proto](proto/easysshca/v1/ca.proto).
+Initialize a new folder and start the server:
 
 ```sh
-easy-sshca server init --name "Example SSH CA" --folder ./my-ca
+easy-sshca server init --name "My SSH CA" --folder ./my-ca
 easy-sshca server start --config ./my-ca/server/server.yaml
+```
+
+In another terminal, unlock it:
+
+```sh
 ./my-ca/admin/unlock.sh
 ```
 
-Initialization creates three private folders: `server/` for runtime files, `client/` for a TLS certificate and example configuration, and `admin/` for administration and unlocking.
-It prints commands to start the server and run the admin unlock script. Existing folders are refused.
-The generated self-signed certificate covers localhost and loopback IP addresses; listeners bind to loopback.
-For remote access, update the listener addresses and supply a certificate for the server hostname.
+Repeat the unlock after each server restart. Keep the `admin/` folder private; it contains credentials and the bootstrap secret.
+The generated server listens on localhost. For remote access, update the listener addresses, server URL, and TLS certificates.
 
-This is a replacement implementation with a new database schema, protocol, and configuration format.
-It includes no migration or compatibility layer.
+Create a zone and user, grant access, and save a portable client configuration:
+
+```sh
+easy-sshca --config ./my-ca/admin/admin.yaml admin zone add production
+easy-sshca --config ./my-ca/admin/admin.yaml admin user add alice
+easy-sshca --config ./my-ca/admin/admin.yaml admin user zone grant alice production
+easy-sshca --config ./my-ca/admin/admin.yaml admin access-token add \
+  --user alice --name laptop --max-duration 1h -o alice.yaml
+```
+
+To reuse an existing Ed25519 SSH CA, import its unencrypted OpenSSH private key instead of running `zone add`:
+
+```sh
+easy-sshca --config ./my-ca/admin/admin.yaml admin zone import production --file ./existing_ca
+# Or read the key from stdin:
+easy-sshca --config ./my-ca/admin/admin.yaml admin zone import production --stdin < ./existing_ca
+```
+
+Import creates a new zone and preserves the CA fingerprint. It never replaces an existing zone.
+
+Give `alice.yaml` to the user securely. It includes the access token and TLS trust certificate.
+Use a `.json` filename to export JSON instead.
+
+As the user, generate an SSH key and request a certificate:
+
+```sh
+easy-sshca gen-key --file ./alice_ed25519
+easy-sshca --config alice.yaml sign production --file ./alice_ed25519.pub
+```
+
+SSH hosts must trust the zone's CA through `TrustedUserCAKeys` and have an account matching the username.
+Use `--help` on any command for more options.

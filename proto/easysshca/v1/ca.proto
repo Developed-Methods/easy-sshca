@@ -54,6 +54,7 @@ service BootstrapService {
 
 service AdminService {
   rpc CreateZone(Command) returns (Reply);
+  rpc ImportZone(Command) returns (Reply);
   rpc ListZones(Command) returns (Reply);
   rpc UpdateZone(Command) returns (Reply);
   rpc CreateUser(Command) returns (Reply);

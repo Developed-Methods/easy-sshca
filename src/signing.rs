@@ -9,6 +9,23 @@ pub fn generate(comment: &str) -> Result<PrivateKey> {
     k.set_comment(comment);
     Ok(k)
 }
+pub fn import(pem: &str) -> Result<PrivateKey> {
+    if pem.len() > 4096 {
+        return Err(Error::input("CA private key input exceeds 4096 bytes"));
+    }
+    let key = PrivateKey::from_openssh(pem).map_err(|_| {
+        Error::input("invalid OpenSSH CA private key; provide an unencrypted Ed25519 private key")
+    })?;
+    if key.is_encrypted() {
+        return Err(Error::input(
+            "encrypted CA private keys are not supported; provide an unencrypted Ed25519 private key",
+        ));
+    }
+    if key.algorithm() != Algorithm::Ed25519 {
+        return Err(Error::input("only Ed25519 CA private keys are supported"));
+    }
+    Ok(key)
+}
 pub fn sign(
     ca: &PrivateKey,
     public: &str,

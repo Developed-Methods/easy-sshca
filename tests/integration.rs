@@ -213,6 +213,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     );
     for op in [
         "CreateZone",
+        "ImportZone",
         "ListZones",
         "UpdateZone",
         "CreateUser",
@@ -263,6 +264,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     let user = s.user().await;
     for op in [
         "CreateZone",
+        "ImportZone",
         "ListZones",
         "UpdateZone",
         "CreateUser",
@@ -783,7 +785,7 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn crash_recovery_limits_and_failed_trust_install() {
+async fn crash_recovery_and_request_limits() {
     let mut s = Server::new().await;
     s.unlock().await;
     let user = s.user().await;
@@ -855,41 +857,7 @@ async fn crash_recovery_limits_and_failed_trust_install() {
     .unwrap();
     assert_eq!(detail.reason, "INVALID_INPUT");
     auth::request_id(&detail.request_id).unwrap();
-    let destination = s.dir.path().join("trusted.pub");
-    std::fs::write(&destination, "existing trust").unwrap();
-    let install = std::process::Command::new("bash")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/scripts/install-trust.sh"
-        ))
-        .arg(format!("{}/zones/production/ca.pub", s.https))
-        .arg("SHA256:wrong")
-        .arg(&destination)
-        .arg(s.client.tls_ca.as_ref().unwrap())
-        .output()
-        .unwrap();
-    assert!(!install.status.success());
-    assert_eq!(
-        std::fs::read_to_string(&destination).unwrap(),
-        "existing trust"
-    );
     s.stop();
-    let install = std::process::Command::new("bash")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/scripts/install-trust.sh"
-        ))
-        .arg(format!("{}/zones/production/ca.pub", s.https))
-        .arg("SHA256:wrong")
-        .arg(&destination)
-        .arg(s.client.tls_ca.as_ref().unwrap())
-        .output()
-        .unwrap();
-    assert!(!install.status.success());
-    assert_eq!(
-        std::fs::read_to_string(&destination).unwrap(),
-        "existing trust"
-    );
     for entry in std::fs::read_dir(s.dir.path()).unwrap() {
         let entry = entry.unwrap();
         if !entry.file_type().unwrap().is_file() {
@@ -1202,4 +1170,107 @@ async fn token_export_checks_destination_before_creating_credentials() {
     let exported = ClientConfig::load(&destination).unwrap();
     assert_eq!(exported.tls_ca_pem, inline_admin.tls_ca_pem);
     assert!(exported.tls_ca.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ca_import_accepts_files_and_stdin_without_logging_keys() {
+    let mut s = Server::new().await;
+    s.unlock().await;
+    let admin = s.dir.path().join("import-admin.yaml");
+    config::exclusive(
+        &admin,
+        serde_saphyr::to_string(&s.client).unwrap().as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let ca = easy_sshca::signing::generate("PRIVATE_KEY_COMMENT_CANARY").unwrap();
+    let pem = ca.to_openssh(ssh_key::LineEnding::LF).unwrap();
+    let file = s.dir.path().join("existing-ca");
+    config::exclusive(&file, pem.as_bytes(), 0o600).unwrap();
+    for (name, source, input) in [
+        ("from-file", vec!["--file", file.to_str().unwrap()], None),
+        ("from-stdin", vec!["--stdin"], Some(pem.as_str())),
+        ("from-dash", vec!["--file", "-"], Some(pem.as_str())),
+    ] {
+        let mut args = vec!["admin", "zone", "import", name];
+        args.extend(source);
+        let output = run_cli(&admin, &args, input);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            reply["result"]["resources"][0]["fingerprint"],
+            ca.fingerprint(ssh_key::HashAlg::Sha256).to_string()
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("PRIVATE_KEY_COMMENT_CANARY"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_KEY_COMMENT_CANARY"));
+    }
+    for args in [
+        vec!["admin", "zone", "import", "no-source"],
+        vec![
+            "admin",
+            "zone",
+            "import",
+            "two-sources",
+            "--file",
+            file.to_str().unwrap(),
+            "--stdin",
+        ],
+        vec![
+            "admin",
+            "zone",
+            "import",
+            "missing",
+            "--file",
+            "/does/not/exist",
+        ],
+    ] {
+        assert!(!run_cli(&admin, &args, None).status.success());
+    }
+    let bad = run_cli(
+        &admin,
+        &["admin", "zone", "import", "bad", "--stdin"],
+        Some("PRIVATE_INPUT_CANARY"),
+    );
+    assert!(!bad.status.success());
+    assert!(!String::from_utf8_lossy(&bad.stdout).contains("PRIVATE_INPUT_CANARY"));
+    assert!(!String::from_utf8_lossy(&bad.stderr).contains("PRIVATE_INPUT_CANARY"));
+    for (name, algorithm, password) in [
+        ("encrypted", "ed25519", "test-passphrase"),
+        ("unsupported", "rsa", ""),
+    ] {
+        let path = s.dir.path().join(name);
+        let generated = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", algorithm, "-N", password, "-f"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(generated.status.success());
+        let output = run_cli(
+            &admin,
+            &[
+                "admin",
+                "zone",
+                "import",
+                name,
+                "--file",
+                path.to_str().unwrap(),
+            ],
+            None,
+        );
+        assert!(!output.status.success());
+    }
+    s.stop();
+    let logs = std::fs::read_to_string(s.dir.path().join("server.log")).unwrap();
+    assert!(logs.contains("ImportZone"));
+    assert!(!logs.contains("PRIVATE_KEY_COMMENT_CANARY"));
+    for line in pem
+        .lines()
+        .filter(|line| !line.starts_with("-----") && !line.is_empty())
+    {
+        assert!(!logs.contains(line));
+    }
 }
