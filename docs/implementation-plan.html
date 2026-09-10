@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>easy-sshca — greenfield implementation plan</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#000;color:#fff;font:15px/1.55 system-ui,sans-serif}main{max-width:1080px;margin:auto;padding:28px 22px 64px}h1{font-size:27px;margin:0 0 8px}h2{font-size:21px;margin:34px 0 12px;border-top:1px solid #444;padding-top:20px}h3{font-size:16px;margin:20px 0 8px}p{margin:8px 0 12px}a{color:#fff;text-underline-offset:3px}nav{display:flex;flex-wrap:wrap;gap:8px 18px;margin:18px 0}.muted,small{color:#bbb}.box{border:1px solid #555;background:#151515;padding:16px;margin:16px 0}.question{border-left:4px solid #fff;padding:12px 16px;background:#191919;margin:14px 0}.question h3{margin:0 0 8px}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{text-align:left;vertical-align:top;padding:10px;border:1px solid #444}th{background:#202020}code,pre{font:13px/1.55 ui-monospace,monospace}code{overflow-wrap:anywhere}pre{padding:16px;background:#151515;border:1px solid #444;overflow:auto;white-space:pre}li{margin:6px 0}svg{width:100%;height:auto;min-width:590px}.tag{font-size:12px;border:1px solid #888;padding:2px 6px;margin-right:8px}@media(max-width:650px){main{padding:20px 14px}th,td{padding:8px;font-size:14px}h1{font-size:23px}}@media print{body{background:white;color:black}a{color:black}.box,.question,pre,th{background:#eee;color:black}.muted,small{color:#444}svg{filter:invert(1)}}
+</style></head><body><main>
+<h1>easy-sshca: greenfield implementation plan</h1>
+<p class="muted">Implementation-ready draft · 10 September 2026 · Net-new project with no migration or protocol-compatibility requirements.</p>
+<p>Build a small SSH certificate authority with an encrypted SQLite database, a tonic RPC API, and a clap CLI. Each named zone owns one SSH CA. Users request short-lived certificates through named access tokens that belong only to them.</p>
+<nav aria-label="Contents"><a href="#scope">Product scope</a><a href="#architecture">Architecture</a><a href="#bootstrap">Initialization and unlock</a><a href="#model">Data and permissions</a><a href="#interfaces">CLI and RPC</a><a href="#client-config">Client configuration</a><a href="#http">CI trust files</a><a href="#delivery">Delivery and verification</a><a href="#decisions">Accepted decisions</a></nav>
+<div class="box"><strong>Committed baseline</strong><p>One server process uses one local SQLCipher database and two TLS listeners. Tonic serves RPCs, while HTTPS serves public CA files. The server starts locked after every restart. An operator sends the bootstrap secret through RPC to unlock it.</p><p>Administration is global, while authorization is explicit. TOTP enrollment and access-token rotation are self-service. Each named access token belongs to one user and has one dedicated API key. Zone permissions and duration limits constrain signing. A web UI, SSO, host certificates, clustering, and a general policy engine are deferred.</p></div>
+
+<h2 id="scope">1. Product scope and contracts</h2>
+<div class="scroll"><table><thead><tr><th>Capability</th><th>Version-one contract</th></tr></thead><tbody>
+<tr><td>Local SSH keys</td><td><code>gen-key</code> creates Ed25519 keys. Private files use mode 0600. The command refuses overwrites and supports an explicit output path.</td></tr>
+<tr><td>CA discovery</td><td><code>pub-key [zone]</code> fetches the zone’s OpenSSH CA public key and prints its SHA-256 fingerprint. Configuration may supply the zone.</td></tr>
+<tr><td>Certificate signing</td><td><code>sign [zone]</code> derives the username from the configured access token. It accepts a public-key path, duration, and TOTP code.</td></tr>
+<tr><td>Automatic key selection</td><td>The client searches standard SSH public-key paths. It excludes certificate files and reports ambiguity instead of choosing silently.</td></tr>
+<tr><td>TOTP</td><td>An authenticated user enrolls TOTP without administrator help. The CLI shows a terminal QR code and selectable Base32 secret before confirmation.</td></tr>
+<tr><td>Authorization</td><td>A dedicated access token identifies exactly one user. Signing also requires that user’s grant for the requested zone.</td></tr>
+<tr><td>Duration limits</td><td>Zones, users, and access tokens have maximum durations. Every access token requires <code>--max-duration</code>. The effective duration is their minimum.</td></tr>
+<tr><td>Client configuration</td><td>One YAML file at a well-known path contains the endpoint, API key, trust settings, and optional command defaults.</td></tr>
+<tr><td>Administration</td><td>Transactional RPCs manage zones, users, grants, and access tokens. Only an administrator can remove confirmed TOTP.</td></tr>
+</tbody></table></div>
+<p>No existing schema, configuration, command behavior, endpoint, or credential format constrains version one. Do not build importers, aliases, or compatibility adapters.</p>
+
+<h2 id="architecture">2. Process and storage architecture</h2>
+<div class="scroll"><svg viewBox="0 0 940 246" role="img" aria-labelledby="diagram-title"><title id="diagram-title">CLI uses TLS RPC. CI fetches public CA files. Both listeners share server state backed by encrypted SQLite.</title><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#fff"/></marker></defs><g fill="#161616" stroke="#999"><rect x="10" y="26" width="180" height="70" rx="4"/><rect x="10" y="145" width="180" height="70" rx="4"/><rect x="285" y="26" width="225" height="70" rx="4"/><rect x="285" y="145" width="225" height="70" rx="4"/><rect x="600" y="75" width="150" height="95" rx="4"/><rect x="802" y="75" width="128" height="95" rx="4"/></g><g fill="#fff" font-size="15" font-family="system-ui" text-anchor="middle"><text x="100" y="57">clap CLI</text><text x="100" y="79">operator / user</text><text x="100" y="177">CI / provisioning</text><text x="397" y="57">tonic RPC · TLS</text><text x="397" y="79">unlock / admin / sign</text><text x="397" y="177">HTTP(S)</text><text x="397" y="199">public trust files</text><text x="675" y="113">Shared state</text><text x="675" y="140">locked / ready</text><text x="866" y="113">SQLCipher</text><text x="866" y="140">local file</text></g><g stroke="#fff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"><path d="M190 61H275"/><path d="M190 180H275"/><path d="M510 61H554V104H592"/><path d="M510 180H554V146H592"/><path d="M750 122H795"/></g></svg></div>
+<p>Use one Cargo package with library and binary targets. Keep protobuf definitions in <code>proto/easysshca/v1</code>. Separate modules for CLI, protocol, server state, storage, authorization, signing, configuration, and public HTTP.</p>
+<ul><li><strong>RPC:</strong> tonic and prost provide versioned protobuf services. <a href="https://docs.rs/tonic/latest/tonic/transport/index.html" target="_blank" rel="noopener noreferrer">Tonic supports TLS through rustls.</a></li><li><strong>Database:</strong> use rusqlite with bundled SQLCipher. Start with one connection on a dedicated worker and a bounded queue.</li><li><strong>Concurrency:</strong> serialize mutations and signing authorization through that worker. This makes revocation ordering explicit and avoids blocking Tokio threads.</li><li><strong>Signing:</strong> use ssh-key and keep CA private keys in memory only while unlocked. <a href="https://docs.rs/ssh-key/latest/ssh_key/" target="_blank" rel="noopener noreferrer">The crate supports certificate generation and signing.</a></li><li><strong>Public HTTP:</strong> use a small Axum router sharing server state. Separate ports avoid custom HTTP/2 protocol multiplexing.</li><li><strong>Configuration:</strong> use serde with strict schemas. Reject unknown fields, invalid URLs, zero durations, and unreadable TLS files at startup.</li></ul>
+<h3>Server startup configuration</h3>
+<p>Keep server configuration at <code>/etc/easy-sshca/server.yaml</code> by default. It contains no database key, admin API key, access-token key, or CA private key.</p>
+<pre>version: 1
+database: /var/lib/easy-sshca/ca.db
+rpc_listen: 0.0.0.0:9443
+https_listen: 0.0.0.0:9444
+tls:
+  certificate: /etc/easy-sshca/tls/server.crt
+  private_key: /etc/easy-sshca/tls/server.key
+limits:
+  request_bytes: 65536
+  rpc_timeout: 10s
+  database_queue: 128</pre>
+<p>The file uses YAML only and has a required <code>version</code>. Command-line flags may override paths and listener addresses for deployment.</p>
+<h3>Encryption boundary</h3>
+<p>Store SSH CA private keys, TOTP secrets, API-key digests, identities, grants, and issuance records inside SQLCipher. Never create a decrypted database copy.</p>
+<p>SQLCipher encrypts database pages and journal page data. Temporary storage needs explicit configuration. <a href="https://www.zetetic.net/sqlcipher/design/" target="_blank" rel="noopener noreferrer">SQLCipher design reference.</a></p>
+<p>Use memory-backed temporary storage and verify the SQLCipher build at startup. Start with rollback journaling for the single connection. WAL can wait until measured demand justifies it.</p>
+<p>Keep only listener settings, database path, and TLS material outside the database. The TLS private key must be accessible before unlock. SSH CA keys remain encrypted.</p>
+<p>The unlock key and decrypted data exist in process memory while ready. Disable core dumps and use encrypted swap or disable swap. Zeroize owned secret buffers where supported.</p>
+<p>This protects stored CA data and backups. It does not protect a running server from an attacker controlling its process or host.</p>
+
+<h2 id="bootstrap">3. Initialization, locked startup, and recovery</h2>
+<h3>First-time local initialization</h3>
+<ol><li>Run <code>easy-sshca server init --name "Example SSH CA" --db /var/lib/easy-sshca/ca.db</code>.</li><li>Generate a random 32-byte bootstrap secret and an independent random admin API key.</li><li>Alternatively, read an operator-provided admin key from <code>--admin-api-key-file</code>.</li><li>Create the encrypted database exclusively, then initialize schema version one and the admin-key digest.</li><li>Deliver generated credentials once through protected output files or an explicit interactive display.</li><li>Store the bootstrap secret separately from the server database and backups.</li></ol>
+<p>Initialization is local only. It refuses an existing database and requires no listener. Supplied admin keys must meet the documented random-token format.</p>
+<p>Credential output files use exclusive creation and mode 0600. Partial initialization failures must be recoverable without silently replacing credentials or existing state.</p>
+<h3>Every server start</h3>
+<ol><li>Load startup configuration and TLS credentials.</li><li>Start the tonic listener in <code>LOCKED</code> state.</li><li>Expose only unlock, minimal status, and liveness before database access.</li><li>Send the bootstrap secret with <code>easy-sshca server unlock --secret-stdin</code> over verified TLS.</li><li>Apply the key to a candidate SQLCipher connection before querying.</li><li>Read encrypted metadata to validate the key, then check integrity and the exact schema version.</li><li>Publish the connection as <code>READY</code>.</li></ol>
+<p>A key-setting call alone does not establish successful decryption. SQLCipher requires a database read to verify the key. <a href="https://www.zetetic.net/sqlcipher/sqlcipher-api/" target="_blank" rel="noopener noreferrer">SQLCipher key API.</a></p>
+<p>The bootstrap secret authorizes unlock. Admin API keys cannot be checked until the encrypted database opens. Unlock returns status only, never an admin credential.</p>
+<p>Wrong secrets leave the server locked. Reject concurrent unlock attempts and bound request size, execution time, and retry rate. Once ready, reject further unlock requests.</p>
+<p>Use a random secret as the SQLCipher raw key. Human passwords would require a separate password-derivation design and are outside the recommended baseline.</p>
+<p>RPC signing and administration return <code>FAILED_PRECONDITION</code> while locked. HTTP trust files return 503. Liveness remains healthy; readiness stays false.</p>
+<h3>Backup and loss scenarios</h3>
+<p>The minimal backup procedure stops the server cleanly, then copies the encrypted database. Restart requires another RPC unlock. Never copy only a live database file.</p>
+<p>Restore into a stopped instance and unlock with the matching secret. Restore tests must verify CA fingerprints, permissions, and credential state.</p>
+<p>Losing the bootstrap secret makes the encrypted data unrecoverable without another valid copy. Database backups alone cannot restore access.</p>
+<p>Provide a local offline admin-reset command requiring the bootstrap secret. It replaces a lost admin credential without changing CA keys.</p>
+<p>API-key rotation does not change the database encryption key. Database rekeying is a separate offline maintenance feature, deferred from the initial scope.</p>
+
+<h2 id="model">4. Data model and authorization</h2>
+<div class="scroll"><table><thead><tr><th>Table</th><th>Essential data</th></tr></thead><tbody>
+<tr><td>metadata</td><td>Schema version, immutable instance UUID, display name, and creation time.</td></tr><tr><td>zones</td><td>UUID, unique name, CA private/public key, fingerprint, maximum duration, next certificate serial, state, and timestamps.</td></tr><tr><td>users</td><td>UUID, unique username, state, maximum duration, optional confirmed TOTP secret, pending enrollment data, replay state, and timestamps.</td></tr><tr><td>access_tokens</td><td>UUID, owning user UUID, name unique within that user, state, maximum duration, key identifier, secret digest, and lifecycle timestamps.</td></tr><tr><td>user_zones</td><td>Explicit grants using foreign keys and unique user–zone pairs.</td></tr><tr><td>admin_credentials</td><td>Key identifier, secret digest, state, and lifecycle timestamps for global administration only.</td></tr><tr><td>issued_certificates</td><td>Zone, serial, user/access-token UUIDs, public-key fingerprint, validity, request UUID, and creation time.</td></tr><tr><td>idempotency_records</td><td>Actor, operation, request UUID, result digest, status, and expiry for mutation retries.</td></tr><tr><td>audit_events</td><td>Admin and self-service mutations plus signing outcomes, actor IDs, action, result, request UUID, and timestamp. Never store secrets or TOTP codes.</td></tr>
+</tbody></table></div>
+<p>Validate names as nonempty, bounded ASCII letters, digits, underscores, or hyphens. Never turn client-controlled paths into file reads. Apply SQL foreign keys and transactions.</p>
+<p>Users represent SSH principals. Each access token is a named credential owned by exactly one user, not an infrastructure host. A user may own several access tokens, but a token cannot act for another user.</p>
+<p>Zone access applies to users. Any active access token owned by that user can request the user’s certificate in an authorized zone, subject to the token’s duration limit.</p>
+<h3>Signing rules</h3>
+<ol><li>Resolve the active access token from its API secret and load its owning user.</li><li>Require an active user, an active token, and the user’s zone grant.</li><li>Verify the user’s TOTP policy.</li><li>Parse the submitted public key and reject certificates, malformed keys, and unsupported algorithms.</li><li>Set the only principal to the owning user’s username; the caller cannot select another user.</li><li>Clamp duration to the user, access-token, zone, and requested limits.</li><li>Allocate a unique per-zone serial and sign a user certificate in memory.</li><li>Commit issuance and TOTP replay state before returning the certificate and expiration.</li></ol>
+<p>Accept durations such as <code>30m</code>, <code>12h</code>, <code>1d</code>, and <code>1w</code>. The default request is <code>1d</code>. Return the effective duration explicitly.</p>
+<p>Set a five-minute validity backdate for clock skew. Enable standard user-certificate extensions for PTY, agent forwarding, port forwarding, X11 forwarding, and user RC.</p>
+<p>Use six-digit, zero-padded codes and reject accepted timestep replays transactionally. Enrollment stays pending until confirmation succeeds.</p>
+<p>Follow <a href="https://www.rfc-editor.org/rfc/rfc6238" target="_blank" rel="noopener noreferrer">RFC 6238</a> with SHA-1, 30-second steps, and a ±1-step validation window.</p>
+<p>Build the enrollment label as <code>instance_name:username</code>. Put the instance display name in the URI issuer field. Pending enrollments expire after ten minutes.</p>
+<p>An authenticated user starts enrollment with any active access token. The server creates a pending secret and returns it once over TLS. The CLI renders the <code>otpauth://</code> value as a terminal QR code and prints the Base32 secret on its own selectable line, then prompts for a code. Confirmation activates the secret atomically. Cancelled or expired pending enrollments do not affect the current TOTP state.</p>
+<p>Self-service may add TOTP but cannot replace or remove confirmed TOTP. If TOTP is already enrolled, a new enrollment request fails. Only an administrator can clear it, after which the user may enroll again.</p>
+<h3>Credential lifecycle</h3>
+<p>Each API key contains a public identifier and 32 random secret bytes encoded with unpadded Base64url. Store only a SHA-256 secret digest and compare it in constant time. Each access-token record has exactly one current API key.</p>
+<p>Admin creation requires an owning user, a name, and <code>--max-duration</code>, and returns the complete API key once through TLS. Names need only be unique within a user. Listing users or access tokens never returns secret material.</p>
+<p><code>rotate-token</code> is self-service: an active access token authenticates rotation of itself and cannot name another token. The CLI generates and saves the replacement secret securely before submitting it with an idempotency key. The server swaps digests atomically; the previous secret becomes invalid when the transaction commits. A retry with the same idempotency key returns the same outcome without storing retrievable plaintext.</p>
+<p>Administrators rotate admin credentials separately. They may revoke or remove a user access token, but do not receive a replacement secret through the user’s self-service path.</p>
+<p>A lost access-token creation response is recovered by removing the unusable token and creating another. Do not persist plaintext responses for later retrieval.</p>
+<p>Removing a user disables all of that user’s access tokens and removes zone grants. Removing an access token revokes its API secret. Retain stable audit references through tombstones.</p>
+<p>Already issued SSH certificates remain usable until expiry. Removal prevents future issuance; it does not terminate SSH sessions. Immediate revocation requires host-side distribution.</p>
+
+<h2 id="interfaces">5. CLI and RPC surface</h2>
+<p>Ship one executable with user, administrator, and server subcommands. Command names and output contracts begin at version one.</p>
+<pre>easy-sshca server init --name "Example SSH CA" --db /var/lib/easy-sshca/ca.db
+ easy-sshca server start --config /etc/easy-sshca/server.yaml
+ easy-sshca server status
+ easy-sshca server unlock --secret-stdin
+ easy-sshca server reset-admin --db /var/lib/easy-sshca/ca.db
+
+ easy-sshca admin zone add production --max-duration 1d
+ easy-sshca admin zone list
+ easy-sshca admin user add alice --max-duration 1d
+ easy-sshca admin user list
+ easy-sshca admin user remove alice
+ easy-sshca admin user grant-zone alice production
+ easy-sshca admin user revoke-zone alice production
+ easy-sshca admin user totp clear alice
+ easy-sshca admin access-token add --user alice --name laptop --max-duration 1d
+ easy-sshca admin access-token list --user alice
+ easy-sshca admin access-token update --user alice --name laptop --max-duration 1h
+ easy-sshca admin access-token remove --user alice --name laptop
+ easy-sshca admin key rotate-admin
+
+ easy-sshca configure --server https://ca.example.com:9443 --api-key-stdin
+ easy-sshca gen-key --comment alice@laptop
+ easy-sshca totp enroll
+ # Displays a QR code and selectable Base32 secret, then confirms a TOTP code.
+ easy-sshca rotate-token
+ easy-sshca pub-key production
+ easy-sshca sign production --file ~/.ssh/id_ed25519.pub --duration 1h</pre>
+<p>Also expose user, access-token, and zone updates for duration limits. Access-token creation requires <code>--max-duration</code>; it has no implicit default.</p>
+<p>Global options are <code>--config &lt;path&gt;</code> and <code>--json</code>. Endpoint, trust, credential, zone, key, and duration overrides belong to their relevant commands.</p>
+<p>Read API keys and bootstrap secrets through hidden prompts or stdin, never command arguments. Read TOTP interactively by default and support <code>--totp-stdin</code> for automation.</p>
+<p>TOTP enrollment intentionally prints the pending secret because manual authenticator setup requires selectable text. Suppress it from debug logs, shell tracing, and JSON error objects.</p>
+<p>Separate machine-readable stdout from progress and errors on stderr. Save new local credentials atomically with mode 0600. Never include secrets in Debug output.</p>
+<p>For a key named <code>id_ed25519.pub</code>, write <code>id_ed25519-cert.pub</code>. Refuse to replace a certificate unless the user passes <code>--force</code>.</p>
+<p><code>--json</code> emits one versioned JSON object to stdout and no progress text. Use exit code 2 for input, 3 for authentication, 4 for authorization, 5 for unavailable service, and 1 for unexpected failures.</p>
+<div class="scroll"><table><thead><tr><th>Service: easysshca.v1</th><th>Methods</th><th>Authorization</th></tr></thead><tbody>
+<tr><td>BootstrapService</td><td>GetStatus, Unlock</td><td>Minimal status is public. Unlock requires the bootstrap secret and verified TLS.</td></tr>
+<tr><td>AdminService</td><td>Create/List/UpdateZone; Create/List/Update/RemoveUser; Grant/RevokeZone; Create/List/Update/RemoveAccessToken; ClearTotp; RotateAdminKey</td><td>Active global admin API key, ready state.</td></tr>
+<tr><td>UserService</td><td>BeginTotpEnrollment; ConfirmTotpEnrollment; RotateToken</td><td>Active access token owned by the affected user, ready state. Rotation also requires TOTP when enrolled. Confirmation proves possession of the pending secret.</td></tr>
+<tr><td>SigningService</td><td>SignCertificate</td><td>Active access token, owning user’s zone grant, TOTP policy, ready state.</td></tr>
+<tr><td>CAService</td><td>GetPublicKey</td><td>Public, ready state. Shares data with the HTTP endpoint.</td></tr>
+</tbody></table></div>
+<p>Send API keys as <code>authorization: Bearer &lt;api-key&gt;</code> metadata. Mark it sensitive. Put TOTP and unlock secrets in protobuf bodies, never URLs.</p>
+<p>Return typed TOTP-required details, not string-matched errors. Distinguish invalid input, authentication, authorization, duplicates, unavailable state, and exhausted limits.</p>
+<p>Bound messages and list responses. Cap list pages at 100 records and use opaque continuation tokens. Apply a default ten-second client deadline.</p>
+<p>Every mutation carries a request UUID and uses a database transaction. Every response and error returns that request UUID for support and audit correlation.</p>
+
+<h2 id="client-config">6. Simple client configuration</h2>
+<p>The client uses YAML only. A single file contains one server connection and one API key. Version one has no profiles, includes, or environment-variable overlays.</p>
+<h3>Path resolution</h3>
+<ol><li>Use the path from <code>--config</code>, if provided.</li><li>Otherwise, use <code>$XDG_CONFIG_HOME/easy-sshca/config.yaml</code>, if <code>XDG_CONFIG_HOME</code> is set.</li><li>Otherwise, use <code>~/.config/easy-sshca/config.yaml</code>.</li></ol>
+<p>Do not search the working directory or system-wide paths. An explicit missing file is an error. A missing default file prints the exact <code>configure</code> command.</p>
+<h3>Version-one schema</h3>
+<pre>version: 1
+server: https://ca.example.com:9443
+api_key: "esca_at_EXAMPLE_REDACTED"
+
+# Omit tls_ca to use the operating system trust store.
+tls_ca: ~/.config/easy-sshca/company-root-ca.pem
+
+defaults:
+  zone: production
+  public_key: ~/.ssh/id_ed25519.pub
+  duration: 1h</pre>
+<div class="scroll"><table><thead><tr><th>Field</th><th>Rules</th></tr></thead><tbody>
+<tr><td><code>version</code></td><td>Required integer. Accept only <code>1</code>. Reject unsupported versions with an upgrade-oriented error.</td></tr>
+<tr><td><code>server</code></td><td>Required absolute HTTPS URL with an optional port. Reject user information, query strings, fragments, and plaintext HTTP.</td></tr>
+<tr><td><code>api_key</code></td><td>Required for authenticated commands. It may be absent for <code>pub-key</code>, <code>server status</code>, and initial configuration.</td></tr>
+<tr><td><code>tls_ca</code></td><td>Optional PEM file. When absent, use operating-system roots. A leading <code>~/</code> expands to the user’s home directory.</td></tr>
+<tr><td><code>defaults.zone</code></td><td>Optional zone used when a command omits its positional zone.</td></tr>
+<tr><td><code>defaults.public_key</code></td><td>Optional public-key path. Without it, use unambiguous discovery from standard <code>~/.ssh</code> paths.</td></tr>
+<tr><td><code>defaults.duration</code></td><td>Optional request duration. The built-in value is <code>1d</code>. Server-side limits always win.</td></tr>
+</tbody></table></div>
+<p>Reject unknown fields and duplicate YAML keys. Resolve relative file paths against the configuration directory. Do not expand arbitrary environment variables or execute substitutions.</p>
+<h3>Creation, permissions, and updates</h3>
+<p><code>configure</code> creates the parent directory with mode 0700 and the file with mode 0600. It prompts before replacing an existing file.</p>
+<p>The client rejects configuration files readable by group or other users on Unix. It reports the required <code>chmod 600</code> correction.</p>
+<p><code>rotate-token</code> writes the complete updated YAML to a mode-0600 temporary file, calls the idempotent rotation RPC, then renames the file atomically.</p>
+<p>If the RPC result is uncertain, retry with the same request UUID and candidate key. Never restore the old key after the server confirms rotation.</p>
+<p>Command flags override matching configuration values. Configuration values override built-in defaults. Credentials have no command-line override.</p>
+<p>Use a separate file through <code>--config</code> for another account or an administrator credential. Profile management is outside version one.</p>
+<h3>First-user onboarding</h3>
+<ol><li>Configure an administrator file with the generated admin API key.</li><li>Create a zone.</li><li>Create the user.</li><li>Grant that user access to the zone.</li><li>Create a named access token with an explicit maximum duration.</li><li>Transfer the one-time API key through an approved secret channel.</li><li>Run <code>easy-sshca configure --server https://ca.example.com:9443 --api-key-stdin</code> as that user.</li><li>Run <code>easy-sshca totp enroll</code>.</li><li>Scan the QR code or copy the displayed secret.</li><li>Confirm the generated TOTP code.</li><li>Run <code>easy-sshca gen-key</code>.</li><li>Run <code>easy-sshca sign production</code>.</li></ol>
+<p>The user never selects a username. The server derives it from the configured access token for enrollment, rotation, and signing.</p>
+
+<h2 id="http">7. HTTP(S) CA files for CI</h2>
+<p>Serve <code>GET /zones/{name}/ca.pub</code> as an OpenSSH public-key file. This is the only public CA-file route in version one.</p>
+<p>“CA files” means public trust material. Private CA keys never leave the server through HTTP or RPC.</p>
+<p>Provide HTTPS directly, or loopback HTTP behind an existing TLS proxy. Remote plain HTTP is unsuitable for bootstrapping trusted CA material.</p>
+<p>Return a content type, fingerprint-based ETag, and cache revalidation headers. Unknown zones return 404; locked state returns 503.</p>
+<p>Serve <code>GET /health/live</code> and <code>GET /health/ready</code>. Liveness returns 200 after listener startup. Readiness returns 200 only while unlocked and ready.</p>
+<pre># CI downloads and validates the key before installing it.
+curl --fail --show-error --silent \
+  https://ca.example.com/zones/production/ca.pub -o ./production-ca.pub
+ssh-keygen -lf ./production-ca.pub
+# Compare the fingerprint against the expected value held by CI.
+# Install atomically after validation.
+
+# sshd_config on hosts belonging to this zone:
+TrustedUserCAKeys /etc/ssh/easy-sshca/production-ca.pub</pre>
+<p>Provisioning must compare the fingerprint, install the file, validate sshd configuration, and reload sshd. Do not replace a working trust file after a failed fetch.</p>
+<p>Hosts accept user certificates through <code>TrustedUserCAKeys</code>. Without a principals file, the certificate principal must match the login username. <a href="https://man.openbsd.org/sshd_config" target="_blank" rel="noopener noreferrer">OpenSSH configuration reference.</a></p>
+<p>Each host should trust only its intended zones. Local account creation and shared-account principal mapping remain provisioning responsibilities.</p>
+<p>Installed CA keys keep existing hosts independent of CA availability. New provisioning waits for unlock unless public files are mirrored separately.</p>
+
+<h2 id="delivery">8. Implementation sequence and acceptance checks</h2>
+<div class="scroll"><table><thead><tr><th>Phase</th><th>Deliverable</th><th>Acceptance evidence</th></tr></thead><tbody>
+<tr><td>1 · Foundations</td><td>Cargo package, protobuf package, strict configuration schemas, error types, bundled SQLCipher, and in-memory certificate-signing spike.</td><td>Build Linux x86_64 and arm64 artifacts. Reject invalid configuration. Read SQLCipher with the correct key only. Inspect a certificate with OpenSSH.</td></tr>
+<tr><td>2 · Server lifecycle</td><td>Schema version one, initialization, TLS listeners, locked state, unlock, health endpoints, stopped backup and restore, and offline admin reset.</td><td>Restart always locks. Wrong and concurrent unlocks expose no data. Initialization never overwrites. Restore retains CA fingerprints and credential state.</td></tr>
+<tr><td>3 · Administration</td><td>Zones, users, zone grants, named access tokens, audit events, pagination, and admin-key rotation.</td><td>Access tokens cannot administer. Each token resolves one user. Every token has a maximum duration. Disabled identities and revoked credentials fail.</td></tr>
+<tr><td>4 · User client</td><td>Well-known YAML configuration, local key generation, self-service TOTP enrollment, self-service rotation, signing, and certificate output.</td><td>Test precedence, file permissions, atomic rotation, QR and text enrollment, TOTP replay, duration clamping, and real SSH login.</td></tr>
+<tr><td>5 · CA distribution</td><td>Public HTTPS route, ETag support, fingerprint output, and trust-install documentation.</td><td>Fetch with curl. Verify TLS, fingerprints, 404/503 behavior, and unchanged trust files after failed provisioning.</td></tr>
+<tr><td>6 · Hardening and release</td><td>Rate limits, structured audit logs, metrics, systemd unit, release artifacts, checksums, SBOM, operator guide, and disaster-recovery exercise.</td><td>Run fault injection, secret-leak scans, restore drills, load limits, package installation, restart, unlock, sign, and SSH-login tests.</td></tr>
+</tbody></table></div>
+<p>Test database/journal files for known secret markers after writes and crashes. Check logs and temporary directories for leaked credentials and CA private keys.</p>
+<p>Use OpenSSH subprocesses in interoperability tests only. Verify malformed requests, blocked queues, signing/removal ordering, and uniqueness of certificate serials.</p>
+<p>SQLCipher introduces native build dependencies. Version one targets Linux musl on x86_64 and arm64. Prove these builds before implementing the full admin surface.</p>
+<p><a href="https://github.com/rusqlite/rusqlite/blob/master/README.md" target="_blank" rel="noopener noreferrer">Rusqlite documents bundled SQLCipher and vendored OpenSSL build options.</a> Pin compatible dependencies after the feasibility phase.</p>
+<h3>Cross-cutting implementation requirements</h3>
+<ul><li><strong>Time:</strong> use UTC internally and require synchronized server time. TOTP validation and certificate lifetimes depend on accurate clocks.</li><li><strong>Identifiers:</strong> use UUIDv7 values for stored entities and request IDs. Never expose row IDs as protocol identifiers.</li><li><strong>RPC retries:</strong> require request UUIDs for mutations. Cache bounded idempotent outcomes long enough for client retry recovery.</li><li><strong>Errors:</strong> map domain errors to stable gRPC codes and typed details. Human messages may change; machine-readable reason codes may not.</li><li><strong>Logging:</strong> include request UUID, actor type, actor ID, operation, result, and latency. Never log authorization metadata or request bodies containing secrets.</li><li><strong>Metrics:</strong> expose request counts, latency, failure reason, database queue depth, lock state, issuance count, and rate-limit rejections.</li><li><strong>Rate limits:</strong> limit unlock by source address. Limit authentication, signing, TOTP confirmation, and rotation by key identifier and source address.</li><li><strong>Process isolation:</strong> run under an unprivileged account. Restrict database and TLS-key paths through service-manager permissions.</li><li><strong>Supply chain:</strong> pin dependencies, audit advisories and licenses, generate an SBOM, and publish checksums for each release artifact.</li></ul>
+<h3>Test layers</h3>
+<p>Unit tests cover duration parsing, configuration validation, token parsing, policy decisions, TOTP windows, and certificate construction.</p>
+<p>Database tests cover constraints, transaction rollback, replay prevention, serial allocation, idempotency, and concurrent removal versus signing.</p>
+<p>Integration tests start the real server with temporary TLS and SQLCipher files. They exercise every RPC authorization boundary and locked-state response.</p>
+<p>End-to-end tests install a CA public key into an isolated <code>sshd</code>, sign a user key, authenticate, and verify expiry behavior.</p>
+
+<h2 id="decisions">9. Accepted decisions</h2>
+<p>These decisions are part of version one. Implementation does not need additional product clarification for them.</p>
+<div class="question"><h3>Administrator credential</h3><p>Initialization generates and displays the admin API key once. An operator may instead supply it through a protected file.</p><p>The admin API key remains independent from the database unlock secret.</p></div>
+<div class="question"><h3>Unlock ownership</h3><p>An operator invokes the CLI after each restart and sends the bootstrap secret over verified TLS.</p><p>Automatic secret-manager retrieval is deferred because it changes the operational trust boundary.</p></div>
+<div class="question"><h3>TLS termination</h3><p>The server terminates tonic TLS and public HTTPS with externally provisioned credentials.</p><p>Loopback HTTP behind an existing TLS proxy is permitted. A proxy carrying RPC must support gRPC and protect the backend connection.</p></div>
+<div class="question"><h3>User removal and issued certificates</h3><p>Removal blocks new certificates. Issued certificates remain valid until their natural expiry.</p><p>Version one does not publish key-revocation lists or terminate active SSH sessions.</p></div>
+<div class="question"><h3>Username meaning</h3><p>A user name is the local Unix username and the certificate’s only principal. Each access token remains permanently scoped to one user.</p><p>Shared-account principal mapping is outside version one.</p></div>
+<div class="question"><h3>Public keys while locked</h3><p>Public CA-file requests return 503 until the server is unlocked. Installed CA keys keep configured hosts independent of CA availability.</p></div>
+<div class="question"><h3>Algorithms and release platforms</h3><p>Version one generates Ed25519 CA and user keys and signs Ed25519 user public keys.</p><p>Release artifacts target Linux musl on x86_64 and arm64.</p></div>
+<h3>Explicitly deferred</h3>
+<p>Zone deletion and CA rotation need host trust-change procedures. Database rekeying, online backups, KRL distribution, and overlapping API-key rotation remain separate additions.</p>
+<p>Also defer migration tools, compatibility routes, JSON configuration, profiles, SSO, a web UI, host certificates, shared-account principals, clustering, and non-Ed25519 keys.</p>
+<p>The first release includes named-zone creation, user and access-token administration, self-service token rotation, self-service TOTP enrollment, admin-only TOTP removal, and user certificate signing.</p>
+<p class="muted">Technical references appear beside their relevant claims. This document defines a greenfield implementation target, not current behavior.</p>
+</main></body></html>

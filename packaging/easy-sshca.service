@@ -1,0 +1,34 @@
+[Unit]
+Description=SSH certificate authority
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=easy-sshca
+Group=easy-sshca
+ExecStart=/usr/local/bin/easy-sshca server start --config /etc/easy-sshca/server.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+StateDirectory=easy-sshca
+StateDirectoryMode=0700
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

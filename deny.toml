@@ -1,0 +1,21 @@
+[graph]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+
+[licenses]
+allow = [
+  "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT",
+  "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

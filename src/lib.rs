@@ -1,9 +1,21 @@
-pub mod client_config;
-pub mod config_file;
-pub mod fail_helper;
-pub mod server_config;
-pub mod ssh_keygen;
-pub mod start_web_server;
-pub mod totp;
-pub mod web_client;
-pub mod web_server;
+pub mod auth;
+pub mod cli;
+pub mod config;
+pub mod error;
+pub mod http;
+pub mod server;
+pub mod signing;
+pub mod storage;
+pub mod protocol {
+    tonic::include_proto!("easysshca.v1");
+    impl std::fmt::Debug for Command {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Command([redacted])")
+        }
+    }
+    impl std::fmt::Debug for Reply {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Reply([redacted])")
+        }
+    }
+}
