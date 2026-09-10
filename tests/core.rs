@@ -526,3 +526,134 @@ fn relative_configuration_paths_survive_atomic_rewrites() {
     assert_eq!(rewritten.tls_ca, original.tls_ca);
     assert_eq!(rewritten.defaults.public_key, original.defaults.public_key);
 }
+
+#[test]
+fn user_zone_listing_is_scoped_and_paginated() {
+    let mut f = Fixture::new();
+    for name in ["staging", "ungranted"] {
+        f.db.execute(
+            "CreateZone",
+            &f.admin,
+            &Command {
+                name: name.into(),
+                max_duration: 3600,
+                ..cmd()
+            },
+        )
+        .unwrap();
+    }
+    f.db.execute(
+        "GrantZone",
+        &f.admin,
+        &Command {
+            user: "alice".into(),
+            zone: "staging".into(),
+            ..cmd()
+        },
+    )
+    .unwrap();
+    f.db.execute(
+        "UpdateZone",
+        &f.admin,
+        &Command {
+            name: "production".into(),
+            active: Some(false),
+            ..cmd()
+        },
+    )
+    .unwrap();
+    let query = Command {
+        user: "alice".into(),
+        page_size: 1,
+        ..cmd()
+    };
+    let first = f.db.execute("ListUserZones", &f.admin, &query).unwrap();
+    assert_eq!(first.resources.len(), 1);
+    assert_eq!(first.resources[0].name, "production");
+    assert!(!first.resources[0].active);
+    assert!(!first.next_page_token.is_empty());
+    let next =
+        f.db.execute(
+            "ListUserZones",
+            &f.admin,
+            &Command {
+                page_token: first.next_page_token.clone(),
+                ..query.clone()
+            },
+        )
+        .unwrap();
+    assert_eq!(next.resources.len(), 1);
+    assert_eq!(next.resources[0].name, "staging");
+    assert!(next.next_page_token.is_empty());
+    f.db.execute(
+        "CreateUser",
+        &f.admin,
+        &Command {
+            name: "bob".into(),
+            max_duration: 3600,
+            ..cmd()
+        },
+    )
+    .unwrap();
+    assert!(
+        f.db.execute(
+            "ListUserZones",
+            &f.admin,
+            &Command {
+                user: "bob".into(),
+                ..cmd()
+            }
+        )
+        .unwrap()
+        .resources
+        .is_empty()
+    );
+    assert_eq!(
+        f.db.execute(
+            "ListUserZones",
+            &f.admin,
+            &Command {
+                user: "bob".into(),
+                page_token: first.next_page_token,
+                ..cmd()
+            }
+        )
+        .unwrap_err()
+        .code,
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        f.db.execute("ListUserZones", &f.token, &query)
+            .unwrap_err()
+            .code,
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        f.db.execute(
+            "ListUserZones",
+            &f.admin,
+            &Command {
+                user: "missing".into(),
+                ..cmd()
+            }
+        )
+        .unwrap_err()
+        .code,
+        Code::NotFound
+    );
+    f.db.execute(
+        "RemoveUser",
+        &f.admin,
+        &Command {
+            name: "alice".into(),
+            ..cmd()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        f.db.execute("ListUserZones", &f.admin, &query)
+            .unwrap_err()
+            .code,
+        Code::NotFound
+    );
+}

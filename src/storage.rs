@@ -607,6 +607,7 @@ pub fn is_admin(op: &str) -> bool {
             | "RemoveUser"
             | "GrantZone"
             | "RevokeZone"
+            | "ListUserZones"
             | "CreateAccessToken"
             | "ListAccessTokens"
             | "UpdateAccessToken"
@@ -736,13 +737,14 @@ fn list(db: &Connection, op: &str, c: &Command) -> Result<Reply> {
         "ListUsers" => {
             "SELECT id,name,'',max_duration,active,totp_secret IS NOT NULL,'' FROM users WHERE removed=0 AND id>?1 ORDER BY id LIMIT ?2"
         }
+        "ListUserZones" => include_str!("queries/list_user_zones.sql"),
         "ListAccessTokens" => {
             "SELECT t.id,t.name,u.name,t.max_duration,t.active,0,'' FROM access_tokens t JOIN users u ON u.id=t.user_id WHERE t.removed=0 AND t.id>?1 AND u.name=?3 ORDER BY t.id LIMIT ?2"
         }
         _ => return Err(Error::input("unknown list operation")),
     };
     let mut stmt = db.prepare(sql)?;
-    let mut rows = if op == "ListAccessTokens" {
+    let mut rows = if matches!(op, "ListAccessTokens" | "ListUserZones") {
         user_id(db, &c.user)?;
         stmt.query(params![cursor, size + 1, c.user])?
     } else {

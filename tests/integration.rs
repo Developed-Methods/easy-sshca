@@ -216,6 +216,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         "UpdateZone",
         "CreateUser",
         "ListUsers",
+        "ListUserZones",
         "UpdateUser",
         "RemoveUser",
         "GrantZone",
@@ -265,6 +266,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         "UpdateZone",
         "CreateUser",
         "ListUsers",
+        "ListUserZones",
         "UpdateUser",
         "RemoveUser",
         "GrantZone",
@@ -977,4 +979,59 @@ async fn cli_tables_hide_uuids_unless_verbose() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["result"]["resources"][0]["id"], *id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_user_zone_commands_grant_list_and_revoke() {
+    let s = Server::new().await;
+    s.unlock().await;
+    let _user = s.user().await;
+    let path = s.dir.path().join("zone-admin.yaml");
+    config::exclusive(
+        &path,
+        serde_saphyr::to_string(&s.client).unwrap().as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let output = run_cli(&path, args, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["result"].clone()
+    };
+    let listed = run(&["admin", "user", "zone", "list", "alice"]);
+    assert_eq!(listed["resources"][0]["name"], "production");
+    run(&["admin", "user", "zone", "revoke", "alice", "production"]);
+    assert_eq!(
+        run(&["admin", "user", "zone", "list", "alice"])["resources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let empty = std::process::Command::new(env!("CARGO_BIN_EXE_easy-sshca"))
+        .arg("--config")
+        .arg(&path)
+        .args(["admin", "user", "zone", "list", "alice"])
+        .output()
+        .unwrap();
+    assert!(empty.status.success());
+    assert_eq!(
+        String::from_utf8(empty.stdout).unwrap().trim(),
+        "No results."
+    );
+    run(&["admin", "user", "zone", "grant", "alice", "production"]);
+    let listed = run(&["admin", "user", "zone", "list", "alice", "--page-size", "1"]);
+    assert_eq!(listed["resources"][0]["name"], "production");
+    assert_eq!(listed["resources"].as_array().unwrap().len(), 1);
+    for args in [
+        vec!["admin", "user", "grant-zone", "alice", "production"],
+        vec!["admin", "user", "revoke-zone", "alice", "production"],
+        vec!["admin", "user", "zone", "list", "missing"],
+    ] {
+        assert!(!run_cli(&path, &args, None).status.success());
+    }
 }

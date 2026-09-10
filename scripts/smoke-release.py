@@ -74,7 +74,8 @@ def main():
             cli(admin_config, "server", "unlock", "--secret-stdin", secret=(root.parent / "admin" / "ca.bootstrap-secret").read_text())
             cli(admin_config, "admin", "zone", "add", "production", "--max-duration", "1h")
             cli(admin_config, "admin", "user", "add", "alice", "--max-duration", "1h")
-            cli(admin_config, "admin", "user", "grant-zone", "alice", "production")
+            cli(admin_config, "admin", "user", "zone", "grant", "alice", "production")
+            assert cli(admin_config, "admin", "user", "zone", "list", "alice")["resources"][0]["name"] == "production"
             token = cli(admin_config, "admin", "access-token", "add", "--user", "alice", "--name", "release", "--max-duration", "30m")
             user_config = root / "user.yaml"
             cli(user_config, "configure", "--server", endpoint, "--tls-ca", str(root / "tls.crt"),

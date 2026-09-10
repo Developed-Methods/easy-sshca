@@ -113,7 +113,7 @@ easy-sshca --config ~/.config/easy-sshca/admin.yaml configure \
 
 easy-sshca --config ~/.config/easy-sshca/admin.yaml admin zone add production --max-duration 1d
 easy-sshca --config ~/.config/easy-sshca/admin.yaml admin user add alice --max-duration 1d
-easy-sshca --config ~/.config/easy-sshca/admin.yaml admin user grant-zone alice production
+easy-sshca --config ~/.config/easy-sshca/admin.yaml admin user zone grant alice production
 easy-sshca --config ~/.config/easy-sshca/admin.yaml admin access-token add \
   --user alice --name laptop --max-duration 1h
 ```
@@ -209,11 +209,13 @@ The flag can appear before or after a subcommand.
 Empty lists print `No results.`.
 JSON output retains its existing fields, including UUIDs.
 List commands support `--page-size` and `--page-token`.
+Use `admin user zone list alice` to see Alice's granted zones, including disabled zones.
+Grant and revoke with `admin user zone grant alice production` and `admin user zone revoke alice production`.
 Pages contain at most 100 records.
 
 ```sh
 easy-sshca admin access-token update --user alice --name laptop --max-duration 30m
-easy-sshca admin user revoke-zone alice production
+easy-sshca admin user zone revoke alice production
 easy-sshca admin access-token remove --user alice --name laptop
 easy-sshca admin user totp clear alice
 easy-sshca admin user remove alice

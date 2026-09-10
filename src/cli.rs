@@ -206,17 +206,29 @@ pub enum User {
     Remove {
         name: String,
     },
-    GrantZone {
-        user: String,
-        zone: String,
-    },
-    RevokeZone {
-        user: String,
-        zone: String,
+    Zone {
+        #[command(subcommand)]
+        command: UserZone,
     },
     Totp {
         #[command(subcommand)]
         command: AdminTotp,
+    },
+}
+#[derive(Subcommand)]
+pub enum UserZone {
+    Grant {
+        user: String,
+        zone: String,
+    },
+    Revoke {
+        user: String,
+        zone: String,
+    },
+    List {
+        user: String,
+        #[command(flatten)]
+        page: Page,
     },
 }
 #[derive(Subcommand)]
@@ -312,7 +324,10 @@ fn output_reply(json: bool, verbose: bool, op: &str, reply: &Reply) -> anyhow::R
         if !reply.next_page_token.is_empty() {
             eprintln!("Next page: --page-token {}", reply.next_page_token);
         }
-    } else if matches!(op, "ListZones" | "ListUsers" | "ListAccessTokens") {
+    } else if matches!(
+        op,
+        "ListZones" | "ListUsers" | "ListAccessTokens" | "ListUserZones"
+    ) {
         println!("No results.");
     } else if verbose && !reply.request_id.is_empty() {
         println!("OK {}", reply.request_id);
@@ -451,6 +466,11 @@ pub async fn rpc(c: &ClientConfig, op: &str, cmd: Command) -> anyhow::Result<Rep
         "GrantZone" => {
             protocol::admin_service_client::AdminServiceClient::new(channel)
                 .grant_zone(request)
+                .await?
+        }
+        "ListUserZones" => {
+            protocol::admin_service_client::AdminServiceClient::new(channel)
+                .list_user_zones(request)
                 .await?
         }
         "RevokeZone" => {
@@ -1019,18 +1039,35 @@ fn admin_command(admin: Admin) -> anyhow::Result<(&'static str, Command)> {
             "RemoveUser"
         }
         Admin::User {
-            command: User::GrantZone { user, zone },
+            command:
+                User::Zone {
+                    command: UserZone::Grant { user, zone },
+                },
         } => {
             c.user = user;
             c.zone = zone;
             "GrantZone"
         }
         Admin::User {
-            command: User::RevokeZone { user, zone },
+            command:
+                User::Zone {
+                    command: UserZone::Revoke { user, zone },
+                },
         } => {
             c.user = user;
             c.zone = zone;
             "RevokeZone"
+        }
+        Admin::User {
+            command:
+                User::Zone {
+                    command: UserZone::List { user, page },
+                },
+        } => {
+            c.user = user;
+            c.page_size = page.page_size;
+            c.page_token = page.page_token;
+            "ListUserZones"
         }
         Admin::User {
             command: User::Totp {

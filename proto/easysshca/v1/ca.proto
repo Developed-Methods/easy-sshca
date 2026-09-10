@@ -62,6 +62,7 @@ service AdminService {
   rpc RemoveUser(Command) returns (Reply);
   rpc GrantZone(Command) returns (Reply);
   rpc RevokeZone(Command) returns (Reply);
+  rpc ListUserZones(Command) returns (Reply);
   rpc CreateAccessToken(Command) returns (Reply);
   rpc ListAccessTokens(Command) returns (Reply);
   rpc UpdateAccessToken(Command) returns (Reply);

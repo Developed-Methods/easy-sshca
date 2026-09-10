@@ -305,7 +305,12 @@ impl State {
         let id = if request.get_ref().request_id.is_empty()
             && matches!(
                 op,
-                "GetStatus" | "GetPublicKey" | "ListZones" | "ListUsers" | "ListAccessTokens"
+                "GetStatus"
+                    | "GetPublicKey"
+                    | "ListZones"
+                    | "ListUsers"
+                    | "ListAccessTokens"
+                    | "ListUserZones"
             ) {
             auth::id()
         } else {
@@ -438,6 +443,12 @@ impl protocol::admin_service_server::AdminService for State {
         request: Request<Command>,
     ) -> std::result::Result<Response<Reply>, Status> {
         self.rpc("GrantZone", request).await
+    }
+    async fn list_user_zones(
+        &self,
+        request: Request<Command>,
+    ) -> std::result::Result<Response<Reply>, Status> {
+        self.rpc("ListUserZones", request).await
     }
     async fn revoke_zone(
         &self,
