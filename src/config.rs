@@ -77,20 +77,33 @@ pub fn secure_read(path: &Path) -> anyhow::Result<String> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+        .open(path)
+        .with_context(|| {
+            format!(
+                "cannot open private file {}; check file existence and read permissions (symbolic links are not allowed)",
+                path.display()
+            )
+        })?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("cannot inspect {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("{} must be a regular file", path.display());
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
         bail!(
-            "{} must be a private regular file; run chmod 600 {}",
+            "{} is readable or writable by other users; restrict permissions with chmod 600 {}",
             path.display(),
             path.display()
         );
     }
     use std::io::Read;
     let mut data = String::new();
-    file.take(1024 * 1024 + 1).read_to_string(&mut data)?;
+    file.take(1024 * 1024 + 1)
+        .read_to_string(&mut data)
+        .with_context(|| format!("cannot read {} as UTF-8 text", path.display()))?;
     if data.len() > 1024 * 1024 {
-        bail!("file exceeds 1 MiB");
+        bail!("{} exceeds the 1 MiB file limit", path.display());
     }
     Ok(data)
 }
@@ -152,23 +165,57 @@ impl Drop for ClientConfig {
 }
 impl ServerConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let mut c: Self =
-            serde_saphyr::from_str(&fs::read_to_string(path)?).context("invalid server YAML")?;
+        let text = fs::read_to_string(path).with_context(|| {
+            format!(
+                "cannot read server configuration {}. Create it from packaging/server.yaml, or select an existing file with --config PATH",
+                path.display()
+            )
+        })?;
+        let mut c: Self = serde_saphyr::from_str(&text).with_context(|| {
+            format!(
+                "invalid server YAML in {}; check field names, types and duplicate keys",
+                path.display()
+            )
+        })?;
         if c.version != 1 {
-            bail!("unsupported server configuration version");
+            bail!(
+                "{}: unsupported version {}; expected version: 1",
+                path.display(),
+                c.version
+            );
         }
-        if !(1024..=1048576).contains(&c.limits.request_bytes)
-            || !(1..=4096).contains(&c.limits.database_queue)
-        {
-            bail!("invalid request or database queue limit");
+        if !(1024..=1048576).contains(&c.limits.request_bytes) {
+            bail!(
+                "{}: limits.request_bytes must be between 1024 and 1048576; got {}",
+                path.display(),
+                c.limits.request_bytes
+            );
         }
-        crate::auth::parse_duration(&c.limits.rpc_timeout)?;
+        if !(1..=4096).contains(&c.limits.database_queue) {
+            bail!(
+                "{}: limits.database_queue must be between 1 and 4096; got {}",
+                path.display(),
+                c.limits.database_queue
+            );
+        }
+        crate::auth::parse_duration(&c.limits.rpc_timeout).with_context(|| {
+            format!(
+                "{}: invalid limits.rpc_timeout; use a positive duration such as 10s",
+                path.display()
+            )
+        })?;
         let parent = path.parent().unwrap_or(Path::new("."));
         c.database = resolve(&c.database, parent)?;
         c.tls.certificate = resolve(&c.tls.certificate, parent)?;
         c.tls.private_key = resolve(&c.tls.private_key, parent)?;
-        fs::read(&c.tls.certificate).context("cannot read TLS certificate")?;
-        secure_read(&c.tls.private_key).context("cannot read TLS private key")?;
+        fs::read(&c.tls.certificate).with_context(|| format!("cannot read TLS certificate {}; check tls.certificate in {} and file read permissions", c.tls.certificate.display(), path.display()))?;
+        secure_read(&c.tls.private_key).with_context(|| {
+            format!(
+                "cannot read TLS private key {}; check tls.private_key in {}",
+                c.tls.private_key.display(),
+                path.display()
+            )
+        })?;
         Ok(c)
     }
 }

@@ -5,6 +5,7 @@ use crate::{
     protocol::{self, Command, Reply},
     storage::Database,
 };
+use anyhow::Context;
 use std::{
     collections::HashMap,
     net::IpAddr,
@@ -63,10 +64,14 @@ impl State {
         if queue == 0 || timeout.is_zero() {
             anyhow::bail!("queue capacity and timeout must be positive");
         }
-        let lock = crate::storage::lock(&path)?;
-        if !path.is_file() {
-            anyhow::bail!("database does not exist; run server init");
+        let metadata = std::fs::metadata(&path).with_context(|| format!(
+            "cannot access database {}. Check the database path in your server configuration. For a new installation, run easy-sshca server init --name NAME --db PATH",
+            path.display()
+        ))?;
+        if !metadata.is_file() {
+            anyhow::bail!("database {} must be a regular file", path.display());
         }
+        let lock = crate::storage::lock(&path)?;
         let (sender, mut receiver) = mpsc::channel::<Job>(queue);
         let ready = Arc::new(AtomicBool::new(false));
         let worker_ready = ready.clone();
@@ -497,11 +502,19 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         config.limits.database_queue,
         Duration::from_secs(auth::parse_duration(&config.limits.rpc_timeout)?),
     )?;
-    let cert = std::fs::read(&config.tls.certificate)?;
+    let cert = std::fs::read(&config.tls.certificate).with_context(|| {
+        format!(
+            "cannot read TLS certificate {}",
+            config.tls.certificate.display()
+        )
+    })?;
     let key = Zeroizing::new(crate::config::secure_read(&config.tls.private_key)?);
     let https_tls =
         axum_server::tls_rustls::RustlsConfig::from_pem(cert.clone(), key.as_bytes().to_vec())
-            .await?;
+            .await.with_context(|| format!(
+                "cannot configure TLS with certificate {} and private key {}. Supply PEM files with a matching certificate and private key",
+                config.tls.certificate.display(), config.tls.private_key.display()
+            ))?;
     let rpc_tls = tonic::transport::ServerTlsConfig::new()
         .identity(tonic::transport::Identity::from_pem(cert, key.as_bytes()));
     let http_handle = axum_server::Handle::new();
@@ -522,7 +535,8 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         );
     let limit = config.limits.request_bytes;
     let rpc = tonic::transport::Server::builder()
-        .tls_config(rpc_tls)?
+        .tls_config(rpc_tls)
+        .context("cannot configure RPC TLS; check the certificate and private key")?
         .timeout(state.timeout)
         .concurrency_limit_per_connection(64)
         .add_service(
@@ -554,7 +568,10 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
             let mut rx = shutdown_rx;
             let _ = rx.changed().await;
         });
-    let result = tokio::select! {r=http=>r.map_err(anyhow::Error::from),r=rpc=>r.map_err(anyhow::Error::from)};
+    let result = tokio::select! {
+        r = http => r.with_context(|| format!("HTTPS listener {} failed. Check that the address is local and the port is available; change https_listen or --https-listen", config.https_listen)),
+        r = rpc => r.with_context(|| format!("RPC listener {} failed. Check that the address is local and the port is available; change rpc_listen or --rpc-listen", config.rpc_listen)),
+    };
     http_handle.shutdown();
     signal.abort();
     result

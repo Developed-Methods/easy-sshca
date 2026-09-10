@@ -3,6 +3,7 @@ use crate::{
     error::{Error, Result},
     protocol::{Command, Reply, Resource},
 };
+use anyhow::Context;
 use fs2::FileExt;
 use prost::Message;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -39,10 +40,17 @@ pub fn lock(path: &Path) -> anyhow::Result<DatabaseLock> {
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(lock_path)?;
-    file.try_lock_exclusive().map_err(|_| {
-        anyhow::anyhow!("database is in use; stop the server before offline maintenance")
-    })?;
+        .open(&lock_path)
+        .with_context(|| {
+            format!(
+                "cannot open lock file {}; check directory existence and write permissions",
+                lock_path.display()
+            )
+        })?;
+    file.try_lock_exclusive().with_context(|| format!(
+        "cannot acquire lock {}. Another process may be using {}; stop it before starting another server or performing offline maintenance",
+        lock_path.display(), path.display()
+    ))?;
     Ok(DatabaseLock {
         _inner: std::sync::Arc::new(LockedFile(file)),
     })

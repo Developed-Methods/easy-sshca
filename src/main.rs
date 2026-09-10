@@ -73,7 +73,10 @@ async fn main() {
                 serde_json::json!({"version":1,"error":{"reason":reason,"request_id":request}})
             );
         } else {
-            eprintln!("{e:#}");
+            eprintln!("error: {e}");
+            for cause in e.chain().skip(1) {
+                eprintln!("  caused by: {cause}");
+            }
         }
         std::process::exit(code);
     }
