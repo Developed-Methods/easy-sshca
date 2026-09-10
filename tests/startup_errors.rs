@@ -82,7 +82,7 @@ fn missing_configuration_reports_path_and_selection_hint() {
     fs::remove_file(f.0.path().join("server.yaml")).unwrap();
     let error = f.error(false);
     assert!(
-        error.starts_with("error: cannot read server configuration"),
+        error.contains("error: cannot read server configuration"),
         "{error}"
     );
     assert!(error.contains(f.0.path().to_str().unwrap()), "{error}");
@@ -191,4 +191,15 @@ fn private_key_permissions_and_file_type_have_distinct_remedies() {
     let error = f.error(false);
     assert!(error.contains("must be a regular file"), "{error}");
     assert!(!error.contains("chmod"), "{error}");
+}
+
+#[test]
+fn malformed_server_config_does_not_echo_secret_values() {
+    let f = Fixture::new();
+    let secret = "SECRET_ACCIDENTALLY_PASTED_IN_CONFIG";
+    f.replace("request_bytes: 65536", &format!("request_bytes: {secret}"));
+    let error = f.error(false);
+    assert!(error.contains("invalid server YAML"), "{error}");
+    assert!(error.contains("Server failed"), "{error}");
+    assert!(!error.contains(secret));
 }

@@ -303,7 +303,13 @@ Source-wide traffic is capped at 300 requests per minute.
 Credential-wide traffic is capped at 120 requests per minute.
 Source addresses come from the direct connection, never forwarded headers.
 
-Structured stderr logs contain operation, request UUID, credential identifier, outcome, and latency.
+The server uses `tracing` and `tracing-subscriber` to write JSON logs to stderr.
+Startup logs report configuration loading, TLS loading, bound listener addresses, and the locked state.
+A successful unlock logs the transition to READY.
+Shutdown logs report the received signal and server stop.
+RPC and public CA requests log successful outcomes at INFO, rejected requests at WARN, and internal or worker failures at ERROR.
+RPC logs contain operation, validated request UUID, credential identifier, outcome, and latency.
+Health and metrics polling do not produce request logs.
 Authorization headers, bootstrap secrets, TOTP codes, and CA private keys are excluded.
 The encrypted audit table records administrator mutations, self-service mutations, and signing outcomes.
 

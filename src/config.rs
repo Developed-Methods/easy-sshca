@@ -171,8 +171,8 @@ impl ServerConfig {
                 path.display()
             )
         })?;
-        let mut c: Self = serde_saphyr::from_str(&text).with_context(|| {
-            format!(
+        let mut c: Self = serde_saphyr::from_str(&text).map_err(|_| {
+            anyhow::anyhow!(
                 "invalid server YAML in {}; check field names, types and duplicate keys",
                 path.display()
             )

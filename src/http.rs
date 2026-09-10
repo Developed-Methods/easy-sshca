@@ -56,6 +56,11 @@ async fn public(
             } else {
                 StatusCode::OK
             };
+            tracing::info!(
+                status = status.as_u16(),
+                result = "OK",
+                "Public CA request completed"
+            );
             (
                 status,
                 [
@@ -78,6 +83,19 @@ async fn public(
                 tonic::Code::ResourceExhausted => StatusCode::TOO_MANY_REQUESTS,
                 _ => StatusCode::SERVICE_UNAVAILABLE,
             };
+            if matches!(e.code, tonic::Code::Internal | tonic::Code::Unavailable) {
+                tracing::error!(
+                    status = code.as_u16(),
+                    result = e.reason,
+                    "Public CA request failed"
+                );
+            } else {
+                tracing::warn!(
+                    status = code.as_u16(),
+                    result = e.reason,
+                    "Public CA request rejected"
+                );
+            }
             (code, [(header::CACHE_CONTROL, "no-store")], e.message).into_response()
         }
     }

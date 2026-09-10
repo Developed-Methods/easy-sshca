@@ -360,14 +360,84 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         .fingerprint,
         rpc.fingerprint
     );
+    let payload_secret = "DO_NOT_LOG_REQUEST_PAYLOAD";
+    let rejected = cli::rpc(
+        &user,
+        "SignCertificate",
+        Command {
+            request_id: payload_secret.into(),
+            secret: payload_secret.into(),
+            totp: payload_secret.into(),
+            replacement_key: payload_secret.into(),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(rejected.is_err());
+    let enrollment = cli::rpc(&user, "BeginTotpEnrollment", cmd()).await.unwrap();
+    assert!(!enrollment.secret.is_empty());
+    s.stop();
     let logs = std::fs::read_to_string(s.dir.path().join("server.log")).unwrap();
     for secret in [
+        payload_secret,
+        &enrollment.secret,
+        &enrollment.otpauth_uri,
         &s.secret,
         s.client.api_key.as_ref().unwrap(),
         user.api_key.as_ref().unwrap(),
     ] {
         assert!(!logs.contains(secret));
     }
+    let private_key = std::fs::read_to_string(s.dir.path().join("tls.key")).unwrap();
+    for line in private_key
+        .lines()
+        .filter(|line| !line.starts_with("-----") && !line.is_empty())
+    {
+        assert!(!logs.contains(line), "TLS private key leaked into logs");
+    }
+    let events: Vec<serde_json::Value> = logs
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("server logs must be structured JSON"))
+        .collect();
+    for message in [
+        "Server starting",
+        "Server configuration loaded",
+        "TLS certificate and private key loaded",
+        "Listener bound",
+        "Server waiting for unlock; use easy-sshca server unlock",
+        "Database unlocked; server ready for administration and signing",
+        "Server shutting down",
+        "Server stopped",
+    ] {
+        assert!(
+            events
+                .iter()
+                .any(|event| event["fields"]["message"] == message),
+            "missing event: {message}"
+        );
+    }
+    assert!(
+        events
+            .iter()
+            .any(|event| event["level"] == "WARN" && event["fields"]["operation"] == "Unlock")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["level"] == "INFO" && event["fields"]["result"] == "OK")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["fields"]["listener"] == "RPC"
+                && event["fields"]["address"].as_str().is_some())
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["fields"]["listener"] == "HTTPS"
+                && event["fields"]["address"].as_str().is_some())
+    );
 }
 fn run_cli(path: &std::path::Path, args: &[&str], input: Option<&str>) -> std::process::Output {
     use std::io::Write;

@@ -22,11 +22,20 @@ async fn main() {
         }
     };
     let json = cli.json;
+    let server_start = matches!(
+        &cli.command,
+        easy_sshca::cli::Action::Server {
+            command: easy_sshca::cli::Server::Start { .. }
+        }
+    );
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .json()
         .with_env_filter(tracing_subscriber::EnvFilter::new("easy_sshca=info"))
         .init();
+    if server_start {
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), "Server starting");
+    }
     if let Err(e) = easy_sshca::cli::run(cli).await {
         let (code, reason, request) = if let Some(s) = e.downcast_ref::<tonic::Status>() {
             use prost::Message;
@@ -67,6 +76,9 @@ async fn main() {
         } else {
             (2, "INPUT_ERROR".into(), String::new())
         };
+        if server_start {
+            tracing::error!(reason = %reason, "Server failed");
+        }
         if json {
             println!(
                 "{}",

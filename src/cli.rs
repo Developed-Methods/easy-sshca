@@ -617,6 +617,7 @@ limits:
                 .config
                 .unwrap_or_else(|| PathBuf::from("/etc/easy-sshca/server.yaml"));
             let mut c = config::ServerConfig::load(&server_path)?;
+            tracing::info!(config = %server_path.display(), "Server configuration loaded");
             if let Some(db) = db {
                 c.database = db;
             }

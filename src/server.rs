@@ -72,6 +72,11 @@ impl State {
             anyhow::bail!("database {} must be a regular file", path.display());
         }
         let lock = crate::storage::lock(&path)?;
+        tracing::info!(
+            queue_capacity = queue,
+            timeout_seconds = timeout.as_secs(),
+            "Database worker starting"
+        );
         let (sender, mut receiver) = mpsc::channel::<Job>(queue);
         let ready = Arc::new(AtomicBool::new(false));
         let worker_ready = ready.clone();
@@ -106,6 +111,10 @@ impl State {
                                     .store(candidate.issuance_count, Ordering::Relaxed);
                                 db = Some(candidate);
                                 worker_ready.store(true, Ordering::Release);
+                                tracing::info!(
+                                    state = "READY",
+                                    "Database unlocked; server ready for administration and signing"
+                                );
                                 Reply {
                                     request_id: job.command.request_id.clone(),
                                     state: "READY".into(),
@@ -134,7 +143,9 @@ impl State {
                     let _ = response.send(result);
                 }
                 worker_ready.store(false, Ordering::Release);
-            })?;
+                tracing::info!(state = "STOPPED", "Database worker stopped");
+            })
+            .context("cannot start database worker thread")?;
         Ok(Self {
             sender,
             ready,
@@ -326,7 +337,26 @@ impl State {
             entry.0 += 1;
             entry.1 += latency;
         }
-        tracing::info!(request_id=%safe_id,operation=op,actor_type=actor.as_ref().map(|a|a.0.as_str()).unwrap_or("public"),actor_id=actor.as_ref().map(|a|a.1.as_str()).unwrap_or(""),result=reason,latency_us=latency,"RPC completed");
+        macro_rules! log_rpc {
+            ($level:expr) => {
+                tracing::event!($level,
+                    request_id = %safe_id,
+                    operation = op,
+                    actor_type = actor.as_ref().map(|a| a.0.as_str()).unwrap_or("public"),
+                    actor_id = actor.as_ref().map(|a| a.1.as_str()).unwrap_or(""),
+                    result = reason,
+                    latency_us = latency,
+                    "RPC completed"
+                )
+            };
+        }
+        match &result {
+            Ok(_) => log_rpc!(tracing::Level::INFO),
+            Err(e) if matches!(e.code, tonic::Code::Internal | tonic::Code::Unavailable) => {
+                log_rpc!(tracing::Level::ERROR)
+            }
+            Err(_) => log_rpc!(tracing::Level::WARN),
+        }
         match result {
             Ok(reply) => {
                 let mut response = Response::new(reply);
@@ -515,19 +545,43 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 "cannot configure TLS with certificate {} and private key {}. Supply PEM files with a matching certificate and private key",
                 config.tls.certificate.display(), config.tls.private_key.display()
             ))?;
+    tracing::info!("TLS certificate and private key loaded");
     let rpc_tls = tonic::transport::ServerTlsConfig::new()
         .identity(tonic::transport::Identity::from_pem(cert, key.as_bytes()));
+    let rpc_listener = tokio::net::TcpListener::bind(config.rpc_listen).await
+        .with_context(|| format!("RPC listener {} failed. Check that the address is local and the port is available; change rpc_listen or --rpc-listen", config.rpc_listen))?;
+    let https_listener = std::net::TcpListener::bind(config.https_listen)
+        .with_context(|| format!("HTTPS listener {} failed. Check that the address is local and the port is available; change https_listen or --https-listen", config.https_listen))?;
+    https_listener
+        .set_nonblocking(true)
+        .context("cannot configure HTTPS listener")?;
+    tracing::info!(listener = "RPC", address = %rpc_listener.local_addr()?, "Listener bound");
+    tracing::info!(listener = "HTTPS", address = %https_listener.local_addr()?, "Listener bound");
+    tracing::info!(
+        state = "LOCKED",
+        "Server waiting for unlock; use easy-sshca server unlock"
+    );
     let http_handle = axum_server::Handle::new();
     let shutdown_handle = http_handle.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("cannot register SIGTERM handler")?;
     let signal = tokio::spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
-        tokio::select! {_=tokio::signal::ctrl_c()=>{},_=term.recv()=>{}}
+        let received = tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if result.is_err() {
+                    tracing::error!("Shutdown signal handler failed");
+                }
+                "SIGINT"
+            },
+            _ = term.recv() => "SIGTERM",
+        };
+        tracing::info!(signal = received, "Server shutting down");
         shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
         let _ = shutdown_tx.send(true);
     });
-    let http = axum_server::bind_rustls(config.https_listen, https_tls)
+    let http = axum_server::from_tcp_rustls(https_listener, https_tls)
+        .context("cannot initialize HTTPS listener")?
         .handle(http_handle.clone())
         .serve(
             crate::http::router(state.clone())
@@ -564,15 +618,23 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
                 .max_decoding_message_size(limit)
                 .max_encoding_message_size(1048576),
         )
-        .serve_with_shutdown(config.rpc_listen, async move {
-            let mut rx = shutdown_rx;
-            let _ = rx.changed().await;
-        });
+        .serve_with_incoming_shutdown(
+            tokio_stream::wrappers::TcpListenerStream::new(rpc_listener),
+            async move {
+                let mut rx = shutdown_rx;
+                let _ = rx.changed().await;
+            },
+        );
     let result = tokio::select! {
         r = http => r.with_context(|| format!("HTTPS listener {} failed. Check that the address is local and the port is available; change https_listen or --https-listen", config.https_listen)),
         r = rpc => r.with_context(|| format!("RPC listener {} failed. Check that the address is local and the port is available; change rpc_listen or --rpc-listen", config.rpc_listen)),
     };
     http_handle.shutdown();
     signal.abort();
+    if result.is_ok() {
+        tracing::info!(state = "STOPPED", "Server stopped");
+    } else {
+        tracing::error!("Listener failed; server stopping");
+    }
     result
 }
