@@ -24,8 +24,8 @@ impl Fixture {
         )
         .unwrap();
         fs::write(dir.path().join("ca.db"), []).unwrap();
-        fs::write(
-            dir.path().join("server.yaml"),
+        config::exclusive(
+            &dir.path().join("server.yaml"),
             "version: 1
 database: ca.db
 rpc_listen: 127.0.0.1:0
@@ -37,7 +37,9 @@ limits:
   request_bytes: 65536
   rpc_timeout: 10s
   database_queue: 128
-",
+"
+            .as_bytes(),
+            0o600,
         )
         .unwrap();
         Self(dir)
@@ -202,4 +204,51 @@ fn malformed_server_config_does_not_echo_secret_values() {
     assert!(error.contains("invalid server YAML"), "{error}");
     assert!(error.contains("Server failed"), "{error}");
     assert!(!error.contains(secret));
+}
+
+#[test]
+fn inline_tls_config_requires_private_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let path = f.0.path().join("server.yaml");
+    let mut server = config::ServerConfig::load(&path).unwrap();
+    let key = server.private_key_pem().unwrap();
+    server.tls.private_key = None;
+    server.tls.private_key_pem = Some(key.to_string());
+    fs::write(&path, serde_saphyr::to_string(&server).unwrap()).unwrap();
+    assert_eq!(
+        config::ServerConfig::load(&path)
+            .unwrap()
+            .private_key_pem()
+            .unwrap()
+            .as_str(),
+        key.as_str()
+    );
+
+    for mode in [0o644, 0o640, 0o620] {
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(config::ServerConfig::load(&path).is_err());
+        let error = f.error(false);
+        assert!(
+            error.contains("cannot read server configuration"),
+            "{error}"
+        );
+        assert!(error.contains("chmod 600"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(!error.contains(key.as_str()), "{error}");
+    }
+}
+
+#[test]
+fn server_config_rejects_symbolic_links() {
+    let f = Fixture::new();
+    let path = f.0.path().join("server.yaml");
+    let target = f.0.path().join("real-server.yaml");
+    fs::rename(&path, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(config::ServerConfig::load(&target).is_ok());
+    assert!(config::ServerConfig::load(&path).is_err());
+    let error = f.error(false);
+    assert!(error.contains("symbolic links are not allowed"), "{error}");
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
 }

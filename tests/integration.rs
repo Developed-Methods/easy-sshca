@@ -43,7 +43,7 @@ impl Server {
         config::exclusive(&key, tls.signing_key.serialize_pem().as_bytes(), 0o600).unwrap();
         let rpc = port();
         let https = port();
-        std::fs::write(dir.path().join("server.yaml"),format!("version: 1\nserver: https://127.0.0.1:{rpc}\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display())).unwrap();
+        config::exclusive(&dir.path().join("server.yaml"),format!("version: 1\nserver: https://127.0.0.1:{rpc}\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display()).as_bytes(), 0o600).unwrap();
         let process = Self::spawn(dir.path());
         let s = Self {
             dir,
