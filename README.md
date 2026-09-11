@@ -229,21 +229,7 @@ age -R alice_age.pub -o alice.yaml.age alice.yaml
 
 Delete your copy after delivery. To revoke a leaked token, run `admin access-token remove --user alice --name laptop`.
 
-## Reference
-
-### Configuration secrets
-
-Every secret accepts inline content or an external file:
-
-- Client and admin configurations accept `api_key` or `api_key_file`.
-- Admin configurations accept `bootstrap_secret` or `bootstrap_secret_file`.
-- Client and admin configurations accept `tls_ca_pem` or `tls_ca`.
-- Server configurations accept `tls.certificate_pem` or `tls.certificate`.
-- Server configurations accept `tls.private_key_pem` or `tls.private_key`.
-
-Do not configure both forms of the same value.
-
-### Importing an existing CA
+## Importing an existing CA
 
 To reuse an existing Ed25519 SSH CA, import its unencrypted OpenSSH private key instead of running `zone add`:
 
@@ -258,15 +244,3 @@ Import creates a new zone and preserves the CA fingerprint. It never replaces an
 Each CA key can belong to only one zone, including inactive zones. Changing a key's comment does not create a new CA identity.
 
 Before importing, inventory every host that already trusts the CA. Treat those hosts as part of the zone's access scope. OpenSSH enforces CA trust and principals, not this application's zone names. Use a fresh CA key when hosts require separate access scopes.
-
-### Duplicate CA keys
-
-On unlock, the server checks existing CA identities and transactionally adds unique public-key and fingerprint indexes. Duplicate CAs stop unlock with `DUPLICATE_CA`, identifying the conflicting zones and fingerprint. The database remains unchanged.
-
-Before upgrading an existing deployment, run `--json admin zone list` with the current version and compare every zone's fingerprint. Include inactive zones and follow all pagination tokens. Resolve repeated fingerprints before deployment.
-
-Replace shared CAs with distinct keys and update host trust and user grants for each intended scope. The application cannot replace a zone's CA; create replacement zones with fresh keys. Remove shared CA trust from affected hosts; disabling a zone does not invalidate certificates already issued.
-
-Inactive duplicates also require repair; disabling them cannot restore isolation. Back up the encrypted database before offline repair of legacy duplicate zones. Preserve issuance and audit records when repairing zone identities and coordinating host trust changes.
-
-Use `--help` on any command for more options.
