@@ -28,13 +28,25 @@ Note: to keep the file somewhere else, pass `--config PATH` to every command.
 
 ### 2. Generate an SSH key
 
-The CA signs Ed25519 keys only. Generate one:
+The CA signs Ed25519 keys only. If you already have an Ed25519 key, skip this step and use it.
+
+To make a new key:
 
 ```sh
 easy-sshca gen-key
 ```
 
 This writes the private key to `~/.ssh/id_ed25519` and the public key to `~/.ssh/id_ed25519.pub`.
+
+`gen-key` never overwrites. If either file exists, it stops with `key files already exist`.
+
+`ssh-keygen` works too, and it can protect the private key with a passphrase:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+```
+
+Note: a passphrase never reaches the CA. Signing reads the public key only.
 
 ### 3. Point the configuration at your public key
 
