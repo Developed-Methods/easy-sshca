@@ -41,10 +41,12 @@ jobs:
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
           rustup override set "$RUST_TOOLCHAIN"
-      - name: Build release binary
+      - name: Build and test release binary
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo build --locked --release --target "$TARGET" --bin easy-sshca
+        run: |
+          cargo build --locked --release --target "$TARGET" --bin easy-sshca
+          cargo test --locked --release --target "$TARGET" --test cli_startup
       - name: Check and package binary
         env:
           TARGET: ${{ matrix.target }}

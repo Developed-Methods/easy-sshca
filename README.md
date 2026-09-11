@@ -2,7 +2,9 @@
 
 An SSH certificate authority with a server, admin CLI, and client in one executable.
 
-Build and install on Linux with Rust, a C compiler, make, and Perl:
+The client and admin CLI support Linux and macOS. Running the server requires Linux for process-wide memory locking.
+
+Build and install with Rust, a C compiler, make, and Perl:
 
 ```sh
 cargo install --path . --locked
