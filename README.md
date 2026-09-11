@@ -112,7 +112,7 @@ Keep `admin.yaml` on your local machine. Never copy it to the server.
 
 ### 2. Prepare the server configuration
 
-Edit `./my-ca/server.yaml` for the real host. Bind the listeners to all interfaces and install a TLS certificate for your CA hostname:
+Edit `./my-ca/server.yaml` for the real host. Set the database path and bind the listeners to all interfaces. Leave the `tls` block exactly as `server init` wrote it:
 
 ```yaml
 version: 1
@@ -120,15 +120,17 @@ database: /var/lib/easy-sshca/ca.db
 rpc_listen: 0.0.0.0:9443
 https_listen: 0.0.0.0:9444
 tls:
-  certificate: /etc/easy-sshca/tls.crt
-  private_key: /etc/easy-sshca/tls.key
+  certificate_pem: |
+    -----BEGIN CERTIFICATE-----
+    ...                                # leave as generated
+  private_key_pem: |
+    -----BEGIN PRIVATE KEY-----
+    ...                                # leave as generated
 limits:
   request_bytes: 65536
   rpc_timeout: 10s
   database_queue: 128
 ```
-
-Note: `server init` generates a self-signed certificate for `localhost` only. Replace it with a certificate for `ca.example.com`.
 
 ### 3. Copy the database and configuration to the server
 
@@ -150,20 +152,29 @@ The server starts locked. Every operation except `unlock` fails, and `/health/re
 
 ### 4. Point the admin configuration at the server
 
-Edit `./my-ca/admin.yaml`. Change `server` to your CA address and delete the `tls_ca_pem` block:
+Edit `./my-ca/admin.yaml` and change `server` to your CA address. Leave `tls_ca_pem` in place; it is how the client trusts the server certificate:
 
 ```yaml
 version: 1
 server: https://ca.example.com:9443
 api_key: esca_ad_01a08de5-b018-7398-8cda-6c5d3fb62caf_...
 bootstrap_secret: QVYcKDvuJZhYW3j8dt9vPxA6GRglTeXujc9iLowfu8o
+tls_ca_pem: |
+  -----BEGIN CERTIFICATE-----
+  ...                                  # leave as generated
 defaults:
   zone: null
   public_key: null
   duration: null
 ```
 
-Note: delete `tls_ca_pem` only if a public authority issued your TLS certificate. For a private authority, replace its value with that authority's PEM certificate.
+CAUTION: the init certificate covers `localhost`, `127.0.0.1`, and `::1` only. Connecting by any other name fails with `certificate not valid for name`.
+
+To reach the CA by hostname, reissue `tls.certificate_pem` and `tls.private_key_pem` for that name, then copy the new certificate into `tls_ca_pem`. Otherwise forward the port and keep `server: https://localhost:9443`:
+
+```sh
+ssh -L 9443:localhost:9443 ca.example.com
+```
 
 ### 5. Unlock the server
 
