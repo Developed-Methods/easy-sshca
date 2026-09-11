@@ -31,10 +31,17 @@ fn main() {
             command: easy_sshca::cli::Server::Start { .. }
         }
     );
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .json()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("easy_sshca=info"))
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("easy_sshca", tracing::Level::INFO),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .json(),
+        )
         .init();
     if server_start {
         tracing::info!(version = env!("CARGO_PKG_VERSION"), "Server starting");

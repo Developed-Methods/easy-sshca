@@ -3,7 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("LIBSQLITE3_FLAGS").as_deref() != Ok("-DOMIT_MEMLOCK") {
         return Err("build from the repository root so .cargo/config.toml disables SQLCipher per-buffer memory unlocking".into());
     }
-    let mut config = prost_build::Config::new();
+    let mut config = tonic_prost_build::Config::new();
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
     config.skip_debug([".easysshca.v1.Command", ".easysshca.v1.Reply"]);
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
