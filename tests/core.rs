@@ -669,6 +669,9 @@ fn client_config_accepts_inline_tls_and_rejects_ambiguous_trust() {
         version: 1,
         server: "https://localhost:9443".into(),
         api_key: None,
+        api_key_file: None,
+        bootstrap_secret: None,
+        bootstrap_secret_file: None,
         tls_ca: None,
         tls_ca_pem: Some(cert.clone()),
         defaults: Default::default(),
@@ -706,6 +709,73 @@ fn client_config_accepts_inline_tls_and_rejects_ambiguous_trust() {
     config::exclusive(&path, br#"{"version": 1, "server": "https://localhost:9443", "api_key": "SECRET_CANARY", "unknown": 1}"#, 0o600).unwrap();
     let error = config::ClientConfig::load(&path).err().unwrap().to_string();
     assert!(!error.contains("SECRET_CANARY"));
+}
+
+#[test]
+fn configs_accept_inline_and_external_secret_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let api_key = auth::new_key("ad");
+    let bootstrap_secret = auth::random_secret();
+    config::exclusive(
+        &dir.path().join("api-key"),
+        format!("{}\n", api_key.as_str()).as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    config::exclusive(
+        &dir.path().join("bootstrap-secret"),
+        format!("{}\n", bootstrap_secret.as_str()).as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let path = dir.path().join("client.yaml");
+    config::exclusive(
+        &path,
+        b"version: 1\nserver: https://localhost:9443\napi_key_file: api-key\nbootstrap_secret_file: bootstrap-secret\n",
+        0o600,
+    )
+    .unwrap();
+    let client = config::ClientConfig::load(&path).unwrap();
+    assert_eq!(
+        client.api_key_value().unwrap().unwrap().as_str(),
+        api_key.as_str()
+    );
+    assert_eq!(
+        client.bootstrap_secret_value().unwrap().unwrap().as_str(),
+        bootstrap_secret.as_str()
+    );
+
+    let tls = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let server_path = dir.path().join("server.yaml");
+    let server = config::ServerConfig {
+        version: 1,
+        database: "ca.db".into(),
+        rpc_listen: "127.0.0.1:9443".parse().unwrap(),
+        https_listen: "127.0.0.1:9444".parse().unwrap(),
+        tls: config::Tls {
+            certificate: None,
+            certificate_pem: Some(tls.cert.pem()),
+            private_key: None,
+            private_key_pem: Some(tls.signing_key.serialize_pem()),
+        },
+        limits: config::Limits {
+            request_bytes: 65536,
+            rpc_timeout: "10s".into(),
+            database_queue: 128,
+        },
+    };
+    config::exclusive(
+        &server_path,
+        serde_saphyr::to_string(&server).unwrap().as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    let loaded = config::ServerConfig::load(&server_path).unwrap();
+    assert_eq!(loaded.certificate_pem().unwrap(), tls.cert.pem().as_bytes());
+    assert_eq!(
+        loaded.private_key_pem().unwrap().as_str(),
+        tls.signing_key.serialize_pem()
+    );
 }
 
 #[test]

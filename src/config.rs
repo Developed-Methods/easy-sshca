@@ -16,6 +16,12 @@ pub struct ClientConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_file: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_secret_file: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_ca_pem: Option<String>,
@@ -29,7 +35,7 @@ pub struct Defaults {
     pub public_key: Option<PathBuf>,
     pub duration: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub version: u32,
@@ -39,13 +45,19 @@ pub struct ServerConfig {
     pub tls: Tls,
     pub limits: Limits,
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tls {
-    pub certificate: PathBuf,
-    pub private_key: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate_pem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key_pem: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     pub request_bytes: usize,
@@ -132,6 +144,12 @@ impl ClientConfig {
         if self.tls_ca.is_some() && self.tls_ca_pem.is_some() {
             bail!("configure only one of tls_ca and tls_ca_pem");
         }
+        if self.api_key.is_some() && self.api_key_file.is_some() {
+            bail!("configure only one of api_key and api_key_file");
+        }
+        if self.bootstrap_secret.is_some() && self.bootstrap_secret_file.is_some() {
+            bail!("configure only one of bootstrap_secret and bootstrap_secret_file");
+        }
         if self
             .tls_ca_pem
             .as_ref()
@@ -141,6 +159,9 @@ impl ClientConfig {
         }
         if let Some(x) = &self.api_key {
             crate::auth::key(x)?;
+        }
+        if let Some(x) = &self.bootstrap_secret {
+            crate::auth::bootstrap(x)?;
         }
         if let Some(x) = &self.defaults.zone {
             crate::auth::name(x)?;
@@ -171,6 +192,36 @@ impl ClientConfig {
             Ok(self.tls_ca_pem.clone())
         }
     }
+    pub fn api_key_value(&self) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
+        let value = match (&self.api_key, &self.api_key_file) {
+            (Some(value), None) => Some(zeroize::Zeroizing::new(value.clone())),
+            (None, Some(path)) => Some(zeroize::Zeroizing::new(
+                secure_read(path)?.trim().to_owned(),
+            )),
+            (None, None) => None,
+            (Some(_), Some(_)) => bail!("configure only one of api_key and api_key_file"),
+        };
+        if let Some(value) = &value {
+            crate::auth::key(value)?;
+        }
+        Ok(value)
+    }
+    pub fn bootstrap_secret_value(&self) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
+        let value = match (&self.bootstrap_secret, &self.bootstrap_secret_file) {
+            (Some(value), None) => Some(zeroize::Zeroizing::new(value.clone())),
+            (None, Some(path)) => Some(zeroize::Zeroizing::new(
+                secure_read(path)?.trim().to_owned(),
+            )),
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                bail!("configure only one of bootstrap_secret and bootstrap_secret_file")
+            }
+        };
+        if let Some(value) = &value {
+            crate::auth::bootstrap(value)?;
+        }
+        Ok(value)
+    }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text=zeroize::Zeroizing::new(secure_read(path).with_context(||format!("cannot load {}; run easy-sshca configure --server https://HOST:9443 --api-key-stdin",path.display()))?);
         let mut config: Self = if path
@@ -191,9 +242,17 @@ impl ClientConfig {
             *x = resolve(x, parent)?;
             fs::read(&*x).context("cannot read TLS CA")?;
         }
+        if let Some(x) = &mut config.api_key_file {
+            *x = resolve(x, parent)?;
+        }
+        if let Some(x) = &mut config.bootstrap_secret_file {
+            *x = resolve(x, parent)?;
+        }
         if let Some(x) = &mut config.defaults.public_key {
             *x = resolve(x, parent)?;
         }
+        config.api_key_value()?;
+        config.bootstrap_secret_value()?;
         Ok(config)
     }
 }
@@ -203,16 +262,19 @@ impl Drop for ClientConfig {
         if let Some(s) = &mut self.api_key {
             s.zeroize();
         }
+        if let Some(s) = &mut self.bootstrap_secret {
+            s.zeroize();
+        }
     }
 }
 impl ServerConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = fs::read_to_string(path).with_context(|| {
+        let text = zeroize::Zeroizing::new(fs::read_to_string(path).with_context(|| {
             format!(
                 "cannot read server configuration {}. For a new server, run easy-sshca server init --name NAME --folder NEW_FOLDER. Otherwise, select an existing file with --config PATH",
                 path.display()
             )
-        })?;
+        })?);
         let mut c: Self = serde_saphyr::from_str(&text).map_err(|_| {
             anyhow::anyhow!(
                 "invalid server YAML in {}; check field names, types and duplicate keys",
@@ -248,17 +310,79 @@ impl ServerConfig {
         })?;
         let parent = path.parent().unwrap_or(Path::new("."));
         c.database = resolve(&c.database, parent)?;
-        c.tls.certificate = resolve(&c.tls.certificate, parent)?;
-        c.tls.private_key = resolve(&c.tls.private_key, parent)?;
-        fs::read(&c.tls.certificate).with_context(|| format!("cannot read TLS certificate {}; check tls.certificate in {} and file read permissions", c.tls.certificate.display(), path.display()))?;
-        secure_read(&c.tls.private_key).with_context(|| {
-            format!(
-                "cannot read TLS private key {}; check tls.private_key in {}",
-                c.tls.private_key.display(),
+        if c.tls.certificate.is_some() == c.tls.certificate_pem.is_some() {
+            bail!(
+                "{}: configure exactly one of tls.certificate and tls.certificate_pem",
                 path.display()
-            )
-        })?;
+            );
+        }
+        if c.tls.private_key.is_some() == c.tls.private_key_pem.is_some() {
+            bail!(
+                "{}: configure exactly one of tls.private_key and tls.private_key_pem",
+                path.display()
+            );
+        }
+        if c.tls
+            .certificate_pem
+            .as_ref()
+            .is_some_and(|pem| pem.trim().is_empty())
+        {
+            bail!(
+                "{}: tls.certificate_pem must contain a PEM certificate",
+                path.display()
+            );
+        }
+        if c.tls
+            .private_key_pem
+            .as_ref()
+            .is_some_and(|pem| pem.trim().is_empty())
+        {
+            bail!(
+                "{}: tls.private_key_pem must contain a PEM private key",
+                path.display()
+            );
+        }
+        if let Some(certificate) = &mut c.tls.certificate {
+            *certificate = resolve(certificate, parent)?;
+            fs::read(&*certificate).with_context(|| format!("cannot read TLS certificate {}; check tls.certificate in {} and file read permissions", certificate.display(), path.display()))?;
+        }
+        if let Some(private_key) = &mut c.tls.private_key {
+            *private_key = resolve(private_key, parent)?;
+            secure_read(private_key).with_context(|| {
+                format!(
+                    "cannot read TLS private key {}; check tls.private_key in {}",
+                    private_key.display(),
+                    path.display()
+                )
+            })?;
+        }
         Ok(c)
+    }
+
+    pub fn certificate_pem(&self) -> anyhow::Result<Vec<u8>> {
+        match (&self.tls.certificate, &self.tls.certificate_pem) {
+            (Some(path), None) => fs::read(path)
+                .with_context(|| format!("cannot read TLS certificate {}", path.display())),
+            (None, Some(pem)) => Ok(pem.as_bytes().to_vec()),
+            _ => bail!("configure exactly one TLS certificate source"),
+        }
+    }
+
+    pub fn private_key_pem(&self) -> anyhow::Result<zeroize::Zeroizing<String>> {
+        match (&self.tls.private_key, &self.tls.private_key_pem) {
+            (Some(path), None) => secure_read(path).map(zeroize::Zeroizing::new),
+            (None, Some(pem)) => Ok(zeroize::Zeroizing::new(pem.clone())),
+            _ => bail!("configure exactly one TLS private-key source"),
+        }
+    }
+}
+
+impl Drop for ServerConfig {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(key) = &mut self.tls.private_key_pem {
+            key.zeroize();
+        }
     }
 }
 pub fn private_parent(path: &Path) -> anyhow::Result<()> {

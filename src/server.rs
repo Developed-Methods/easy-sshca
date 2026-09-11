@@ -549,18 +549,26 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         config.limits.database_queue,
         Duration::from_secs(auth::parse_duration(&config.limits.rpc_timeout)?),
     )?;
-    let cert = std::fs::read(&config.tls.certificate).with_context(|| {
-        format!(
-            "cannot read TLS certificate {}",
-            config.tls.certificate.display()
-        )
-    })?;
-    let key = Zeroizing::new(crate::config::secure_read(&config.tls.private_key)?);
+    let cert = config.certificate_pem()?;
+    let key = config.private_key_pem()?;
+    let certificate_source = config
+        .tls
+        .certificate
+        .as_ref()
+        .map_or("tls.certificate_pem".to_owned(), |path| {
+            path.display().to_string()
+        });
+    let private_key_source = config
+        .tls
+        .private_key
+        .as_ref()
+        .map_or("tls.private_key_pem".to_owned(), |path| {
+            path.display().to_string()
+        });
     let https_tls =
         axum_server::tls_rustls::RustlsConfig::from_pem(cert.clone(), key.as_bytes().to_vec())
             .await.with_context(|| format!(
-                "cannot configure TLS with certificate {} and private key {}. Supply PEM files with a matching certificate and private key",
-                config.tls.certificate.display(), config.tls.private_key.display()
+                "cannot configure TLS with certificate {certificate_source} and private key {private_key_source}. Supply a matching PEM certificate and private key"
             ))?;
     tracing::info!("TLS certificate and private key loaded");
     let rpc_tls = tonic::transport::ServerTlsConfig::new()
