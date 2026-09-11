@@ -448,28 +448,38 @@ pub fn secure_read(path: &Path) -> anyhow::Result<String> {
             path.display()
         );
     }
-    read_bounded(file)
-        .with_context(|| format!("cannot read {} as UTF-8 text", path.display()))?
-        .with_context(|| format!("{} exceeds the 1 MiB file limit", path.display()))
+    let mut data = String::new();
+    let within_limit = read_bounded(file, &mut data)
+        .with_context(|| format!("cannot read {} as UTF-8 text", path.display()))?;
+    if !within_limit {
+        bail!("{} exceeds the 1 MiB file limit", path.display());
+    }
+    Ok(data)
 }
 
-/// Read UTF-8 text up to the file limit. Returns `None` when the input is larger.
-fn read_bounded(reader: impl Read) -> std::io::Result<Option<String>> {
-    let mut data = String::new();
+/// Read UTF-8 text into `buffer`, stopping just past the file limit.
+/// Returns `false` when the input was larger than the limit.
+///
+/// The caller owns the buffer so secrets can be read into zeroizing memory,
+/// including input that is then rejected.
+fn read_bounded(reader: impl Read, buffer: &mut String) -> std::io::Result<bool> {
     reader
         .take(MAX_FILE_BYTES as u64 + 1)
-        .read_to_string(&mut data)?;
-    Ok((data.len() <= MAX_FILE_BYTES).then_some(data))
+        .read_to_string(buffer)?;
+    Ok(buffer.len() <= MAX_FILE_BYTES)
 }
 
 fn read_config(path: &Path) -> anyhow::Result<Zeroizing<String>> {
     if path != Path::new(STDIN_PATH) {
         return secure_read(path).map(Zeroizing::new);
     }
-    read_bounded(std::io::stdin().lock())
-        .context("cannot read configuration from stdin as UTF-8 text")?
-        .map(Zeroizing::new)
-        .context("configuration from stdin exceeds the 1 MiB file limit")
+    let mut text = Zeroizing::new(String::new());
+    let within_limit = read_bounded(std::io::stdin().lock(), &mut text)
+        .context("cannot read configuration from stdin as UTF-8 text")?;
+    if !within_limit {
+        bail!("configuration from stdin exceeds the 1 MiB file limit");
+    }
+    Ok(text)
 }
 
 fn parent_dir(path: &Path) -> &Path {
