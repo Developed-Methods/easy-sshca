@@ -139,7 +139,7 @@ impl Database {
         lock: DatabaseLock,
         deadline: std::time::Instant,
     ) -> Result<Self> {
-        let connection = connect(path, secret).map_err(|_| Error::auth())?;
+        let mut connection = connect(path, secret).map_err(|_| Error::auth())?;
         connection.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline))?;
         let version: i64 = connection
             .query_row("SELECT version FROM metadata", [], |r| r.get(0))
@@ -171,17 +171,51 @@ impl Database {
         {
             return Err(Error::internal());
         }
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut fingerprints = HashMap::new();
         let mut keys = HashMap::new();
         {
-            let mut stmt = connection.prepare("SELECT id,private_key FROM zones")?;
-            for row in
-                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            {
-                let (id, pem) = row?;
+            let mut stmt = tx.prepare("SELECT id,private_key,name,fingerprint FROM zones")?;
+            for row in stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })? {
+                let (id, pem, name, stored_fingerprint) = row?;
                 let pem = Zeroizing::new(pem);
-                keys.insert(id, ssh_key::PrivateKey::from_openssh(pem.as_bytes())?);
+                let ca = ssh_key::PrivateKey::from_openssh(pem.as_bytes())?;
+                let fingerprint = ca.fingerprint(ssh_key::HashAlg::Sha256).to_string();
+                if let Some(other) = fingerprints.insert(fingerprint.clone(), name.clone()) {
+                    return Err(Error::new(
+                        tonic::Code::FailedPrecondition,
+                        "DUPLICATE_CA",
+                        format!(
+                            "zones {other:?} and {name:?} share CA {fingerprint}; separate their CA keys and host trust before unlocking"
+                        ),
+                    ));
+                }
+                if fingerprint != stored_fingerprint {
+                    return Err(Error::new(
+                        tonic::Code::FailedPrecondition,
+                        "CA_IDENTITY_MISMATCH",
+                        format!("zone {name:?} has an inconsistent CA fingerprint"),
+                    ));
+                }
+                keys.insert(id, ca);
             }
         }
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS zone_ca_public_key ON zones(public_key)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS zone_ca_fingerprint ON zones(fingerprint)",
+            [],
+        )?;
+        tx.commit()?;
         let issuance_count =
             connection.query_row("SELECT count(*) FROM issued_certificates", [], |r| r.get(0))?;
         connection.progress_handler(0, None::<fn() -> bool>)?;
@@ -330,6 +364,18 @@ impl Database {
                     .public_key()
                     .fingerprint(ssh_key::HashAlg::Sha256)
                     .to_string();
+                let duplicate: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM zones WHERE fingerprint=?1)",
+                    [&fingerprint],
+                    |r| r.get(0),
+                )?;
+                if duplicate {
+                    return Err(Error::new(
+                        tonic::Code::AlreadyExists,
+                        "DUPLICATE_CA",
+                        "CA key already belongs to a zone, including inactive zones",
+                    ));
+                }
                 tx.execute(
                     "INSERT INTO zones VALUES(?1,?2,?3,?4,?5,?6,1,1,?7,?7)",
                     params![id, c.name, &*pem, public, fingerprint, c.max_duration, now],

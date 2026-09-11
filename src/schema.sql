@@ -5,6 +5,8 @@ CREATE TABLE zones (
  fingerprint TEXT NOT NULL, max_duration INTEGER NOT NULL CHECK(max_duration > 0), next_serial INTEGER NOT NULL DEFAULT 1,
  active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE UNIQUE INDEX zone_ca_public_key ON zones(public_key);
+CREATE UNIQUE INDEX zone_ca_fingerprint ON zones(fingerprint);
 CREATE TABLE users (
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1, removed INTEGER NOT NULL DEFAULT 0,
  max_duration INTEGER NOT NULL CHECK(max_duration > 0), totp_secret TEXT, pending_secret TEXT, pending_expires INTEGER,
