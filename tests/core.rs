@@ -404,6 +404,122 @@ fn idempotency_conflicts_secret_replays_and_failed_sign_rollback() {
     );
 }
 #[test]
+fn certificate_retries_require_current_zone_authorization() {
+    for revoke_grant in [true, false] {
+        let mut f = Fixture::new();
+        let request = Command {
+            zone: "production".into(),
+            public_key: signing::generate("test")
+                .unwrap()
+                .public_key()
+                .to_openssh()
+                .unwrap(),
+            ..cmd()
+        };
+        let first = f.db.execute("SignCertificate", &f.token, &request).unwrap();
+        let change = Command {
+            user: "alice".into(),
+            zone: "production".into(),
+            name: "production".into(),
+            active: Some(false),
+            ..cmd()
+        };
+        f.db.execute(
+            if revoke_grant {
+                "RevokeZone"
+            } else {
+                "UpdateZone"
+            },
+            &f.admin,
+            &change,
+        )
+        .unwrap();
+        for request_id in [request.request_id.clone(), auth::id()] {
+            assert_eq!(
+                f.db.execute(
+                    "SignCertificate",
+                    &f.token,
+                    &Command {
+                        request_id,
+                        ..request.clone()
+                    },
+                )
+                .unwrap_err()
+                .code,
+                Code::PermissionDenied
+            );
+        }
+        f.db.execute(
+            if revoke_grant {
+                "GrantZone"
+            } else {
+                "UpdateZone"
+            },
+            &f.admin,
+            &Command {
+                request_id: auth::id(),
+                active: Some(true),
+                ..change
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            f.db.execute("SignCertificate", &f.token, &request).unwrap(),
+            first
+        );
+        assert_eq!(f.db.issuance_count, 1);
+        let (serial, issued): (u64, u64) = f.db.connection.query_row(
+            "SELECT next_serial,(SELECT count(*) FROM issued_certificates) FROM zones WHERE name='production'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!((serial, issued), (2, 1));
+    }
+}
+
+#[test]
+fn certificate_retries_accept_consumed_totp() {
+    let mut f = Fixture::new();
+    let secret = auth::totp_secret();
+    f.db.connection
+        .execute(
+            "UPDATE users SET totp_secret=?1,last_step=-1 WHERE name='alice'",
+            [&*secret],
+        )
+        .unwrap();
+    let bytes = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &secret).unwrap();
+    let request = Command {
+        zone: "production".into(),
+        public_key: signing::generate("test")
+            .unwrap()
+            .public_key()
+            .to_openssh()
+            .unwrap(),
+        totp: totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, &bytes, auth::now()),
+        ..cmd()
+    };
+    let first = f.db.execute("SignCertificate", &f.token, &request).unwrap();
+    assert_eq!(
+        f.db.execute("SignCertificate", &f.token, &request).unwrap(),
+        first
+    );
+    assert_eq!(
+        f.db.execute(
+            "SignCertificate",
+            &f.token,
+            &Command {
+                request_id: auth::id(),
+                ..request
+            }
+        )
+        .unwrap_err()
+        .reason,
+        "INVALID_TOTP"
+    );
+    assert_eq!(f.db.issuance_count, 1);
+}
+
+#[test]
 fn strict_yaml_permissions_paths_and_key_discovery() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.yaml");

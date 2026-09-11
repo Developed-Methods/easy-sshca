@@ -331,6 +331,9 @@ impl Database {
                     "one-time secret was already delivered; remove and recreate the token or restart enrollment",
                 ));
             }
+            if op == "SignCertificate" {
+                signing_zone(&tx, &c.zone, &actor.user_id)?;
+            }
             return Reply::decode(response.as_slice()).map_err(|_| Error::internal());
         }
         let count: u64 =
@@ -556,7 +559,7 @@ impl Database {
                 } else {
                     auth::duration(c.duration)?
                 };
-                let (zone,limit,serial):(String,u64,u64)=tx.query_row("SELECT z.id,z.max_duration,z.next_serial FROM zones z JOIN user_zones g ON g.zone_id=z.id WHERE z.name=?1 AND z.active=1 AND g.user_id=?2",params![c.zone,actor.user_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?.ok_or_else(Error::denied)?;
+                let (zone, limit, serial) = signing_zone(&tx, &c.zone, &actor.user_id)?;
                 check_totp(&tx, actor, &c.totp, now)?;
                 let effective = requested
                     .min(limit)
@@ -633,6 +636,15 @@ impl Database {
         }
         Ok(reply)
     }
+}
+fn signing_zone(db: &Connection, zone: &str, user_id: &str) -> Result<(String, u64, u64)> {
+    db.query_row(
+        "SELECT z.id,z.max_duration,z.next_serial FROM zones z JOIN user_zones g ON g.zone_id=z.id WHERE z.name=?1 AND z.active=1 AND g.user_id=?2",
+        params![zone, user_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()?
+    .ok_or_else(Error::denied)
 }
 fn changed(n: usize) -> Result<()> {
     if n == 0 {
