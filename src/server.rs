@@ -61,6 +61,7 @@ impl Drop for UnlockGuard {
 }
 impl State {
     pub fn new(path: PathBuf, queue: usize, timeout: Duration) -> anyhow::Result<Self> {
+        crate::memory::protect()?;
         if queue == 0 || timeout.is_zero() {
             anyhow::bail!("queue capacity and timeout must be positive");
         }

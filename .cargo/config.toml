@@ -1,0 +1,4 @@
+[env]
+# SQLCipher's munlock calls can unlock pages shared with Rust allocations.
+# Process-wide locking in memory::protect replaces its per-buffer locking.
+LIBSQLITE3_FLAGS = { value = "-DOMIT_MEMLOCK", force = true }
