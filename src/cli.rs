@@ -2,13 +2,14 @@ use crate::{
     auth,
     config::{self, ClientConfig},
     protocol::{self, Command, Reply},
+    terminal::{read_secret, read_totp},
 };
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -331,19 +332,6 @@ pub enum Totp {
     },
 }
 
-pub fn read_secret(stdin: bool, prompt: &str) -> anyhow::Result<Zeroizing<String>> {
-    let value = if stdin {
-        let mut value = String::new();
-        io::stdin().take(4097).read_to_string(&mut value)?;
-        if value.len() > 4096 {
-            bail!("secret input exceeds 4096 bytes");
-        }
-        value.trim_end_matches(['\r', '\n']).to_owned()
-    } else {
-        rpassword::prompt_password(prompt)?
-    };
-    Ok(Zeroizing::new(value))
-}
 fn command() -> Command {
     Command {
         request_id: auth::id(),
@@ -1003,11 +991,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             )?;
             cmd.public_key = fs::read_to_string(&file)?;
             if totp_stdin {
-                cmd.totp = read_secret(true, "")?.to_string();
+                cmd.totp = read_totp(true, "")?.to_string();
             }
             let reply = match rpc(&c, "SignCertificate", cmd.clone()).await {
                 Err(e) if !totp_stdin && totp_required(&e) => {
-                    cmd.totp = read_secret(false, "TOTP code: ")?.to_string();
+                    cmd.totp = read_totp(false, "TOTP code: ")?.to_string();
                     rpc(&c, "SignCertificate", cmd).await?
                 }
                 result => result?,
@@ -1039,7 +1027,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             print_enrollment_qr(&enrollment.otpauth_uri)?;
             println!("\n{}\n", enrollment.secret);
             let mut cmd = command();
-            cmd.totp = read_secret(false, "Confirm TOTP code: ")?.to_string();
+            cmd.totp = read_totp(false, "Confirm TOTP code: ")?.to_string();
             output_reply(
                 false,
                 verbose,
@@ -1052,7 +1040,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let c = load(&path, ConnectionArgs::default())?;
             let mut cmd = command();
-            cmd.totp = read_secret(totp_stdin, "Confirm TOTP code: ")?.to_string();
+            cmd.totp = read_totp(totp_stdin, "Confirm TOTP code: ")?.to_string();
             output_reply(
                 json,
                 verbose,
@@ -1392,7 +1380,7 @@ async fn rotate(
         let mut cmd = command();
         cmd.replacement_key = auth::new_key(expected).to_string();
         if totp_stdin {
-            cmd.totp = read_secret(true, "")?.to_string();
+            cmd.totp = read_totp(true, "")?.to_string();
         }
         let mut replacement = current.clone();
         replacement.api_key = Some(cmd.replacement_key.clone());
@@ -1420,7 +1408,7 @@ async fn rotate(
             .is_some_and(|d| matches!(d.reason.as_str(), "TOTP_REQUIRED" | "INVALID_TOTP"))
     }) && (!totp_stdin || recovering)
     {
-        pending.command.totp = read_secret(totp_stdin, "TOTP code: ")?.to_string();
+        pending.command.totp = read_totp(totp_stdin, "TOTP code: ")?.to_string();
         config::atomic(
             &pending_path,
             Zeroizing::new(serde_saphyr::to_string(&pending)?).as_bytes(),
