@@ -6,10 +6,11 @@ fn failure(message: impl Into<String>) -> Error {
     Error::failed_precondition("MEMORY_PROTECTION_FAILED", message)
 }
 
-/// Disable kernel core dumps, including dumps sent to a pipe collector.
-#[cfg(target_os = "linux")]
+/// Disable core files and, on Linux, dumps sent to a pipe collector.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn disable_dumps() -> Result<()> {
-    // SAFETY: plain prctl and setrlimit calls with valid constant arguments.
+    // SAFETY: plain prctl calls with valid constant arguments.
+    #[cfg(target_os = "linux")]
     unsafe {
         if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
             return Err(failure(format!(
@@ -20,6 +21,9 @@ pub fn disable_dumps() -> Result<()> {
         if libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) != 0 {
             return Err(failure("process dumpability is not disabled"));
         }
+    }
+    // SAFETY: setrlimit receives a valid rlimit pointer.
+    unsafe {
         let no_core = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
@@ -71,7 +75,7 @@ pub fn protect() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn disable_dumps() -> Result<()> {
     Err(failure("secret memory protection requires Linux"))
 }
