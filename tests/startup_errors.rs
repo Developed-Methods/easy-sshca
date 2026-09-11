@@ -252,3 +252,19 @@ fn server_config_rejects_symbolic_links() {
     assert!(error.contains("symbolic links are not allowed"), "{error}");
     assert!(error.contains(path.to_str().unwrap()), "{error}");
 }
+
+#[test]
+fn metrics_rejects_public_bind_addresses() {
+    for address in ["0.0.0.0:9445", "[::]:9445", "192.0.2.1:9445"] {
+        let f = Fixture::new();
+        f.replace(
+            "https_listen: 127.0.0.1:0",
+            &format!("https_listen: 127.0.0.1:0\nmetrics_listen: '{address}'"),
+        );
+        let error = f.error(false);
+        assert!(
+            error.contains("metrics_listen must use a loopback address"),
+            "{error}"
+        );
+    }
+}

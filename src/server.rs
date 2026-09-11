@@ -166,12 +166,14 @@ impl State {
         if limits.len() >= 10000 {
             limits.retain(|_, (start, _)| start.elapsed() < Duration::from_secs(60));
         }
-        if limits.len() >= 10000 && !limits.contains_key(&bucket) {
-            return Err(Error::new(
-                tonic::Code::ResourceExhausted,
-                "RATE_LIMIT",
-                "rate limit capacity reached",
-            ));
+        if limits.len() >= 10000
+            && !limits.contains_key(&bucket)
+            && let Some(oldest) = limits
+                .iter()
+                .min_by_key(|(_, (start, _))| *start)
+                .map(|(key, _)| key.clone())
+        {
+            limits.remove(&oldest);
         }
         let (start, count) = limits.entry(bucket).or_insert((Instant::now(), 0));
         if start.elapsed() >= Duration::from_secs(60) {
@@ -198,7 +200,19 @@ impl State {
     ) -> Result<Reply> {
         auth::request_id(&command.request_id)?;
         let source = source
-            .map(|x| x.to_string())
+            .map(|ip| match ip {
+                IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+                    Some(ip) => ip.to_string(),
+                    None => format!(
+                        "{:x}:{:x}:{:x}:{:x}::/64",
+                        ip.segments()[0],
+                        ip.segments()[1],
+                        ip.segments()[2],
+                        ip.segments()[3]
+                    ),
+                },
+                IpAddr::V4(ip) => ip.to_string(),
+            })
             .unwrap_or_else(|| "local".into());
         if op == "GetStatus" {
             return Ok(Reply {
@@ -229,8 +243,9 @@ impl State {
                 120
             },
         )?;
-        if !credential.is_empty() && !matches!(op, "GetPublicKey" | "Unlock") {
-            let key = auth::key(&credential)?;
+        if !matches!(op, "GetPublicKey" | "Unlock")
+            && let Ok(key) = auth::key(&credential)
+        {
             self.rate(format!("key:{}", key.id), 120)?;
             self.rate(
                 format!("key:{}:{op}", key.id),
@@ -548,6 +563,21 @@ impl protocol::ca_service_server::CaService for State {
 }
 
 pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
+    if config
+        .metrics_listen
+        .is_some_and(|address| !address.ip().is_loopback())
+    {
+        anyhow::bail!("metrics_listen must use a loopback address");
+    }
+    let metrics_listener = if let Some(address) = config.metrics_listen {
+        Some(
+            tokio::net::TcpListener::bind(address)
+                .await
+                .context("cannot bind metrics listener")?,
+        )
+    } else {
+        None
+    };
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut state = State::new(
         config.database.clone(),
@@ -618,6 +648,13 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
             crate::http::router(state.clone())
                 .into_make_service_with_connect_info::<std::net::SocketAddr>(),
         );
+    let metrics_router = crate::http::metrics_router(state.clone());
+    let metrics = async move {
+        match metrics_listener {
+            Some(listener) => axum::serve(listener, metrics_router).await,
+            None => std::future::pending::<std::io::Result<()>>().await,
+        }
+    };
     let limit = config.limits.request_bytes;
     let rpc = tonic::transport::Server::builder()
         .tls_config(rpc_tls)
@@ -657,6 +694,7 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
             },
         );
     let result = tokio::select! {
+        r = metrics => r.context("metrics listener failed"),
         r = http => r.with_context(|| format!("HTTPS listener {} failed. Check that the address is local and the port is available; change https_listen or --https-listen", config.https_listen)),
         r = rpc => r.with_context(|| format!("RPC listener {} failed. Check that the address is local and the port is available; change rpc_listen or --rpc-listen", config.rpc_listen)),
     };
@@ -668,4 +706,101 @@ pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
         tracing::error!("Listener failed; server stopping");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> (State, mpsc::Receiver<Job>) {
+        let (sender, receiver) = mpsc::channel(512);
+        (
+            State {
+                server: String::new(),
+                sender,
+                ready: Arc::new(AtomicBool::new(true)),
+                unlocking: Arc::new(AtomicBool::new(false)),
+                limits: Arc::new(Mutex::new(HashMap::new())),
+                metrics: Arc::new(Metrics::default()),
+                timeout: Duration::from_secs(2),
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn full_rate_table_admits_newcomers_and_preserves_existing_limits() {
+        let (state, _receiver) = state();
+        state.rate("oldest".into(), 1).unwrap();
+        for i in 0..9999 {
+            state.rate(format!("source:{i}"), 1).unwrap();
+        }
+        assert_eq!(
+            state.rate("source:9998".into(), 1).unwrap_err().reason,
+            "RATE_LIMIT"
+        );
+        state.rate("newcomer".into(), 1).unwrap();
+        let limits = state.limits.lock().unwrap();
+        assert_eq!(limits.len(), 10000);
+        assert!(!limits.contains_key("oldest"));
+        assert!(limits.contains_key("newcomer"));
+        drop(limits);
+        assert_eq!(
+            state.rate("newcomer".into(), 1).unwrap_err().reason,
+            "RATE_LIMIT"
+        );
+    }
+
+    #[tokio::test]
+    async fn ipv6_prefix_shares_limits_and_malformed_credentials_reach_worker() {
+        let (state, mut receiver) = state();
+        let worker = tokio::spawn(async move {
+            while let Some(mut job) = receiver.recv().await {
+                assert_eq!(job.credential.as_str(), "not-a-key");
+                let (placeholder, _) = oneshot::channel();
+                let response = std::mem::replace(&mut job.response, placeholder);
+                let _ = response.send(Ok(Reply::default()));
+            }
+        });
+        for i in 1..=120 {
+            state
+                .call(
+                    "ListZones",
+                    "not-a-key".into(),
+                    Command {
+                        request_id: auth::id(),
+                        ..Default::default()
+                    },
+                    Some(format!("2001:db8:1:2::{i:x}").parse().unwrap()),
+                )
+                .await
+                .unwrap();
+        }
+        let error = state
+            .call(
+                "ListZones",
+                "not-a-key".into(),
+                Command {
+                    request_id: auth::id(),
+                    ..Default::default()
+                },
+                Some("2001:db8:1:2::ffff".parse().unwrap()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.reason, "RATE_LIMIT");
+        state
+            .call(
+                "ListZones",
+                "not-a-key".into(),
+                Command {
+                    request_id: auth::id(),
+                    ..Default::default()
+                },
+                Some("2001:db8:1:3::1".parse().unwrap()),
+            )
+            .await
+            .unwrap();
+        worker.abort();
+    }
 }

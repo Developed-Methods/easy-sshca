@@ -72,6 +72,8 @@ pub struct ServerConfig {
     pub database: PathBuf,
     pub rpc_listen: SocketAddr,
     pub https_listen: SocketAddr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_listen: Option<SocketAddr>,
     pub tls: Tls,
     pub limits: Limits,
 }

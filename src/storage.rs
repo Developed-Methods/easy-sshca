@@ -172,6 +172,7 @@ impl Database {
             return Err(Error::internal());
         }
         let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        prune_audit(&tx)?;
         let mut fingerprints = HashMap::new();
         let mut keys = HashMap::new();
         {
@@ -262,7 +263,16 @@ impl Database {
             return public_key(&self.connection, &command.zone, &command.request_id);
         }
         let admin = is_admin(operation);
-        let parsed = auth::key(credential)?;
+        let parsed = auth::key(credential).inspect_err(|_| {
+            let _ = audit(
+                &self.connection,
+                "",
+                "",
+                operation,
+                "MALFORMED_CREDENTIAL",
+                &command.request_id,
+            );
+        })?;
         let mut actor = authenticate(&self.connection, &parsed, admin);
         if actor
             .as_ref()
@@ -744,6 +754,13 @@ fn check_totp(db: &Connection, actor: &Actor, code: &str, now: u64) -> Result<()
     }
     Ok(())
 }
+fn prune_audit(db: &Connection) -> Result<()> {
+    db.execute(
+        "DELETE FROM audit_events WHERE rowid <= (SELECT rowid FROM audit_events ORDER BY rowid DESC LIMIT 1 OFFSET 10000)",
+        [],
+    )?;
+    Ok(())
+}
 fn audit(
     db: &Connection,
     kind: &str,
@@ -756,6 +773,7 @@ fn audit(
         "INSERT INTO audit_events VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![auth::id(), kind, actor, op, result, request, auth::now()],
     )?;
+    prune_audit(db)?;
     Ok(())
 }
 fn public_key(db: &Connection, zone: &str, id: &str) -> Result<Reply> {
