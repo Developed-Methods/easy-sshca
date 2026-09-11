@@ -5,13 +5,11 @@ use ssh_key::{
     rand_core::OsRng,
 };
 pub fn generate(comment: &str) -> Result<PrivateKey> {
-    crate::memory::protect()?;
     let mut k = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)?;
     k.set_comment(comment);
     Ok(k)
 }
 pub fn import(pem: &str) -> Result<PrivateKey> {
-    crate::memory::protect()?;
     if pem.len() > 4096 {
         return Err(Error::input("CA private key input exceeds 4096 bytes"));
     }
@@ -37,7 +35,6 @@ pub fn sign(
     now: u64,
     duration: u64,
 ) -> Result<String> {
-    crate::memory::protect()?;
     let key = PublicKey::from_openssh(public)?;
     if key.algorithm() != Algorithm::Ed25519 {
         return Err(Error::input("only Ed25519 public keys are supported"));

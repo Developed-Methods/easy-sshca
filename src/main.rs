@@ -39,15 +39,19 @@ fn main() {
     if server_start {
         tracing::info!(version = env!("CARGO_PKG_VERSION"), "Server starting");
     }
-    let result = easy_sshca::memory::protect()
-        .map_err(anyhow::Error::from)
-        .and_then(|()| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(anyhow::Error::from)
-        })
-        .and_then(|runtime| runtime.block_on(easy_sshca::cli::run(cli)));
+    let result = if server_start {
+        easy_sshca::memory::protect()
+    } else {
+        Ok(())
+    }
+    .map_err(anyhow::Error::from)
+    .and_then(|()| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(anyhow::Error::from)
+    })
+    .and_then(|runtime| runtime.block_on(easy_sshca::cli::run(cli)));
     if let Err(e) = result {
         let (code, reason, request) = if let Some(s) = e.downcast_ref::<tonic::Status>() {
             use prost::Message;
