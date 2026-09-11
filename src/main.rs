@@ -1,12 +1,15 @@
 use clap::Parser;
-#[tokio::main]
-async fn main() {
-    unsafe {
-        let limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        libc::setrlimit(libc::RLIMIT_CORE, &limit);
+fn main() {
+    if let Err(error) = easy_sshca::memory::disable_dumps() {
+        if std::env::args_os().any(|arg| arg == "--json") {
+            println!(
+                "{}",
+                serde_json::json!({"version":1,"error":{"reason":error.reason,"request_id":""}})
+            );
+        } else {
+            eprintln!("error: {error}");
+        }
+        std::process::exit(1);
     }
     let cli = match easy_sshca::cli::Cli::try_parse() {
         Ok(cli) => cli,
@@ -36,7 +39,16 @@ async fn main() {
     if server_start {
         tracing::info!(version = env!("CARGO_PKG_VERSION"), "Server starting");
     }
-    if let Err(e) = easy_sshca::cli::run(cli).await {
+    let result = easy_sshca::memory::protect()
+        .map_err(anyhow::Error::from)
+        .and_then(|()| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(anyhow::Error::from)
+        })
+        .and_then(|runtime| runtime.block_on(easy_sshca::cli::run(cli)));
+    if let Err(e) = result {
         let (code, reason, request) = if let Some(s) = e.downcast_ref::<tonic::Status>() {
             use prost::Message;
             let detail = easy_sshca::protocol::ErrorDetail::decode(s.details()).ok();

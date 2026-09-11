@@ -56,6 +56,7 @@ pub fn lock(path: &Path) -> anyhow::Result<DatabaseLock> {
     })
 }
 fn connect(path: &Path, secret: &str) -> Result<Connection> {
+    crate::memory::protect()?;
     let raw = auth::bootstrap(secret)?;
     let conn = Connection::open_with_flags(
         path,
@@ -76,6 +77,7 @@ fn connect(path: &Path, secret: &str) -> Result<Connection> {
 }
 impl Database {
     pub fn initialize(path: &Path, secret: &str, admin: &str, name: &str) -> anyhow::Result<()> {
+        crate::memory::protect()?;
         if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
             anyhow::bail!("instance name requires 1–128 printable characters");
         }
@@ -139,6 +141,7 @@ impl Database {
         lock: DatabaseLock,
         deadline: std::time::Instant,
     ) -> Result<Self> {
+        crate::memory::protect()?;
         let mut connection = connect(path, secret).map_err(|_| Error::auth())?;
         connection.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline))?;
         let version: i64 = connection

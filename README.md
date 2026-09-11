@@ -8,6 +8,19 @@ Build and install on Linux with Rust, a C compiler, make, and Perl:
 cargo install --path . --locked
 ```
 
+Configure locked memory before running commands that load secrets. All commands except help and version require an unlimited memlock limit.
+For a shell, have your administrator configure an unlimited hard memlock limit, then run `ulimit -l unlimited`.
+For a systemd service, add this override:
+
+```ini
+[Service]
+LimitMEMLOCK=infinity
+LimitCORE=0
+```
+
+Allow `mlockall` and `prctl` in container or service syscall policies. Configure containers with unlimited soft and hard memlock limits.
+The application refuses to load secrets when these protections fail.
+
 Initialize a new folder and start the server:
 
 ```sh
@@ -84,3 +97,36 @@ easy-sshca --config alice.yaml sign production --file ./alice_ed25519.pub
 
 SSH hosts must trust the zone's CA through `TrustedUserCAKeys` and have an account matching the username.
 Use `--help` on any command for more options.
+
+## Secret memory and host storage
+
+On Linux, startup disables process dumpability and verifies it before creating runtime threads or loading secrets.
+It also checks that setting the core-file limit to zero succeeds.
+Dumpability prevents kernel dumps sent to collectors, where `RLIMIT_CORE` alone does not apply.
+See [Linux core dumps](https://www.man7.org/linux/man-pages/man5/core.5.html).
+
+The application locks current and future process mappings, including Rust CA keys, parsing buffers, and signing stacks.
+Pages become locked when accessed. This protection is independent of SQLCipher's memory controls.
+The bundled SQLCipher build disables per-buffer locking, whose unlock calls could otherwise unlock shared heap pages.
+SQLCipher memory wiping remains enabled. Build from the repository root to apply the required `.cargo/config.toml` settings.
+An unlimited memlock limit prevents later allocations from exhausting a finite locking allowance.
+Locked memory consumes physical RAM; size the host for the process workload.
+See [Linux memory locking](https://www.man7.org/linux/man-pages/man2/mlockall.2.html).
+
+Disable crash collection for the service in your host's collector configuration, including privileged diagnostic agents.
+Encrypt or disable all swap storage. Disable hibernation or encrypt its image storage.
+Memory locking does not prevent hibernation images, kernel crash dumps, or privileged host tools from capturing secrets.
+Apply these requirements to hosts running administrative commands too, especially CA imports.
+Review existing crash dumps, swap, and hibernation images under your secret-retention policy; these changes cannot remove earlier copies.
+
+Library callers must call `memory::protect()` before reading secrets or starting secret-handling threads.
+Database, server, and signing entry points also enforce protection before their own secret processing.
+After protection, do not fork, change process credentials, or call memory-unlocking functions.
+These operations can invalidate process protections.
+
+Tests require the same unlimited memlock limit. With administrative access, run:
+
+```sh
+sudo prlimit --pid $$ --memlock=unlimited:unlimited
+cargo test --locked
+```
