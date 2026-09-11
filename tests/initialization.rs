@@ -204,3 +204,81 @@ fn supplied_admin_key_is_copied_into_the_instance() {
     let client = easy_sshca::config::ClientConfig::load(&folder.join("admin.yaml")).unwrap();
     assert_eq!(client.api_key.as_deref(), Some(key.as_str()));
 }
+
+#[test]
+fn server_address_defaults_and_overrides() {
+    use easy_sshca::config::server_address;
+    for (input, port, expected) in [
+        ("ca.example.com", None, "https://ca.example.com:9443"),
+        (
+            "https://ca.example.com",
+            None,
+            "https://ca.example.com:9443",
+        ),
+        ("ca.example.com:1234", None, "https://ca.example.com:1234"),
+        (
+            "https://ca.example.com:443/",
+            None,
+            "https://ca.example.com:443",
+        ),
+        (
+            "ca.example.com:1234",
+            Some(4321),
+            "https://ca.example.com:4321",
+        ),
+        ("127.0.0.1", None, "https://127.0.0.1:9443"),
+        ("[::1]", None, "https://[::1]:9443"),
+        ("https://[::1]:443", None, "https://[::1]:443"),
+    ] {
+        let result = server_address(input, port).unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(server_address(&result, None).unwrap(), expected);
+    }
+    for input in [
+        "",
+        "http://example.com",
+        "example.com/path",
+        "user@example.com",
+        "example.com?query",
+        "example.com:0",
+        "example.com:65536",
+        "example.com:bad",
+    ] {
+        assert!(server_address(input, None).is_err(), "{input}");
+    }
+    assert!(server_address("example.com", Some(0)).is_err());
+}
+
+#[test]
+fn init_persists_advertised_address_and_independent_listeners() {
+    let temp = tempfile::tempdir().unwrap();
+    for (port_args, expected_port) in [(vec![], 1234), (vec!["--port", "4321"], 4321)] {
+        let folder = temp.path().join(expected_port.to_string());
+        let output = Command::new(env!("CARGO_BIN_EXE_easy-sshca"))
+            .args(["server", "init", "--name", "Remote CA", "--folder"])
+            .arg(&folder)
+            .args([
+                "--server",
+                "ca.example.com:1234",
+                "--https-listen",
+                "0.0.0.0:8443",
+            ])
+            .args(port_args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let server = ServerConfig::load(&folder.join("server.yaml")).unwrap();
+        let client = easy_sshca::config::ClientConfig::load(&folder.join("admin.yaml")).unwrap();
+        assert_eq!(
+            server.server,
+            format!("https://ca.example.com:{expected_port}")
+        );
+        assert_eq!(server.server, client.server);
+        assert_eq!(server.rpc_listen.port(), expected_port);
+        assert_eq!(server.https_listen, "0.0.0.0:8443".parse().unwrap());
+    }
+}

@@ -8,6 +8,32 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const DEFAULT_RPC_PORT: u16 = 9443;
+pub const DEFAULT_HTTPS_PORT: u16 = 9444;
+
+pub fn default_server() -> String {
+    format!("https://localhost:{DEFAULT_RPC_PORT}")
+}
+
+pub fn server_address(address: &str, port: Option<u16>) -> anyhow::Result<String> {
+    let address = if address.contains("://") {
+        address.to_owned()
+    } else {
+        format!("https://{address}")
+    };
+    validate_server(&address)?;
+    let url = url::Url::parse(&address)?;
+    // Parse the authority separately to preserve an explicit HTTPS port of 443.
+    let authority = address.split_once("://").unwrap().1.trim_end_matches('/');
+    let authority: tonic::codegen::http::uri::Authority =
+        authority.parse().context("invalid server address")?;
+    let port = port.or(authority.port_u16()).unwrap_or(DEFAULT_RPC_PORT);
+    if port == 0 {
+        bail!("server port must be between 1 and 65535");
+    }
+    Ok(format!("https://{}:{port}", url.host_str().unwrap()))
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ClientConfig {
@@ -39,6 +65,8 @@ pub struct Defaults {
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub version: u32,
+    #[serde(default = "default_server")]
+    pub server: String,
     pub database: PathBuf,
     pub rpc_listen: SocketAddr,
     pub https_listen: SocketAddr,
@@ -288,6 +316,8 @@ impl ServerConfig {
                 c.version
             );
         }
+        c.server = server_address(&c.server, None)
+            .context("invalid server address in server configuration")?;
         if !(1024..=1048576).contains(&c.limits.request_bytes) {
             bail!(
                 "{}: limits.request_bytes must be between 1024 and 1048576; got {}",

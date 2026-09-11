@@ -864,6 +864,7 @@ fn configs_accept_inline_and_external_secret_sources() {
     let tls = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let server_path = dir.path().join("server.yaml");
     let server = config::ServerConfig {
+        server: config::default_server(),
         version: 1,
         database: "ca.db".into(),
         rpc_listen: "127.0.0.1:9443".parse().unwrap(),

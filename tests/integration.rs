@@ -43,7 +43,7 @@ impl Server {
         config::exclusive(&key, tls.signing_key.serialize_pem().as_bytes(), 0o600).unwrap();
         let rpc = port();
         let https = port();
-        std::fs::write(dir.path().join("server.yaml"),format!("version: 1\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display())).unwrap();
+        std::fs::write(dir.path().join("server.yaml"),format!("version: 1\nserver: https://127.0.0.1:{rpc}\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display())).unwrap();
         let process = Self::spawn(dir.path());
         let s = Self {
             dir,
@@ -1011,7 +1011,7 @@ async fn nested_user_zone_commands_grant_list_and_revoke() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exported_token_configs_are_portable_and_support_rotation() {
     use std::os::unix::fs::PermissionsExt;
-    let s = Server::new().await;
+    let mut s = Server::new().await;
     s.unlock().await;
     let _user = s.user().await;
     let admin_path = s.dir.path().join("export-admin.yaml");
@@ -1023,6 +1023,17 @@ async fn exported_token_configs_are_portable_and_support_rotation() {
     .unwrap();
     let portable = tempfile::tempdir().unwrap();
     for (extension, flag) in [("yaml", "-o"), ("json", "--output")] {
+        if extension == "json" {
+            let path = s.dir.path().join("server.yaml");
+            let mut server = config::ServerConfig::load(&path).unwrap();
+            server.server = s.client.server.clone();
+            config::atomic(&path, serde_saphyr::to_string(&server).unwrap().as_bytes()).unwrap();
+            s.process.kill().unwrap();
+            s.process.wait().unwrap();
+            s.process = Server::spawn(s.dir.path());
+            s.wait().await;
+            s.unlock().await;
+        }
         let path = s.dir.path().join(format!("export.{extension}"));
         let output = run_cli(
             &admin_path,
@@ -1054,6 +1065,14 @@ async fn exported_token_configs_are_portable_and_support_rotation() {
             serde_json::from_str::<serde_json::Value>(&text).unwrap();
         }
         let client = ClientConfig::load(&path).unwrap();
+        assert_eq!(
+            client.server,
+            if extension == "yaml" {
+                s.client.server.replace("localhost", "127.0.0.1")
+            } else {
+                s.client.server.clone()
+            }
+        );
         assert!(client.tls_ca.is_none());
         assert!(
             client
