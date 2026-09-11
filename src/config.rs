@@ -297,7 +297,7 @@ impl Drop for ClientConfig {
 }
 impl ServerConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = zeroize::Zeroizing::new(fs::read_to_string(path).with_context(|| {
+        let text = zeroize::Zeroizing::new(secure_read(path).with_context(|| {
             format!(
                 "cannot read server configuration {}. For a new server, run easy-sshca server init --name NAME --folder NEW_FOLDER. Otherwise, select an existing file with --config PATH",
                 path.display()
