@@ -22,3 +22,5 @@ pub mod protocol {
 }
 
 mod tls;
+
+mod terminal;
