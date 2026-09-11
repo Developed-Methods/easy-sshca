@@ -21,6 +21,7 @@ libc = "0.2"
 prost = "0.14"
 qrcode = { version = "0.14", default-features = false }
 rand_core = { version = "0.6", features = ["getrandom"] }
+rpassword = "7.5.4"
 rcgen = "0.14"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl", "fallible_uint", "hooks"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
