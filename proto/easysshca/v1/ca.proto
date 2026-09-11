@@ -40,6 +40,7 @@ message Reply {
   string certificate = 10;
   uint64 expires_at = 11;
   uint64 effective_duration = 12;
+  string server = 13;
 }
 message ErrorDetail {
   string request_id = 1;

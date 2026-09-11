@@ -31,6 +31,7 @@ pub struct Metrics {
 }
 #[derive(Clone)]
 pub struct State {
+    server: String,
     sender: mpsc::Sender<Job>,
     pub ready: Arc<AtomicBool>,
     unlocking: Arc<AtomicBool>,
@@ -148,6 +149,7 @@ impl State {
             })
             .context("cannot start database worker thread")?;
         Ok(Self {
+            server: String::new(),
             sender,
             ready,
             unlocking: Arc::new(AtomicBool::new(false)),
@@ -467,7 +469,9 @@ impl protocol::admin_service_server::AdminService for State {
         &self,
         request: Request<Command>,
     ) -> std::result::Result<Response<Reply>, Status> {
-        self.rpc("CreateAccessToken", request).await
+        let mut response = self.rpc("CreateAccessToken", request).await?;
+        response.get_mut().server = self.server.clone();
+        Ok(response)
     }
     async fn list_access_tokens(
         &self,
@@ -545,11 +549,12 @@ impl protocol::ca_service_server::CaService for State {
 
 pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let state = State::new(
+    let mut state = State::new(
         config.database.clone(),
         config.limits.database_queue,
         Duration::from_secs(auth::parse_duration(&config.limits.rpc_timeout)?),
     )?;
+    state.server = config.server.clone();
     let cert = config.certificate_pem()?;
     let key = config.private_key_pem()?;
     let certificate_source = config

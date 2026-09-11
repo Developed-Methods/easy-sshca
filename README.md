@@ -35,7 +35,27 @@ easy-sshca --config ./my-ca/admin.yaml server unlock
 ```
 
 Repeat the unlock after each server restart. Keep `admin.yaml` private because it contains the admin key and bootstrap secret.
-The generated server listens on localhost. For remote access, update the listener addresses, server URL, and TLS certificates.
+The generated server listens on localhost, using port `9443` for gRPC and `9444` for HTTPS.
+For remote access, specify the advertised address and listener addresses:
+
+```sh
+easy-sshca server init --name "My SSH CA" --folder ./my-ca \
+  --server ca.example.com --port 9443 \
+  --rpc-listen 0.0.0.0:9443 --https-listen 0.0.0.0:9444
+```
+
+`--server` accepts a hostname, IP address, or HTTPS origin, with an optional port. Use brackets around IPv6 addresses.
+`--port` overrides the address port. If neither supplies a port, initialization uses `9443`.
+The default gRPC listener uses the advertised port. An explicit `--rpc-listen` can select a different port for proxies or forwarding.
+
+`server.yaml` stores the advertised address in `server` and the bind addresses in `rpc_listen` and `https_listen`.
+New admin configs and access-token exports use the advertised address. Token exports obtain it from the running server.
+To change it, edit `server` in `server.yaml`, then restart and unlock the server. Update existing client configs separately.
+Older server configs without `server` default to `https://localhost:9443`; set this field before exporting remote client configs.
+
+Clients with `tls_ca` or `tls_ca_pem` verify certificate trust, validity, and handshake signatures without checking the hostname.
+Changing the advertised address does not require replacing the generated TLS certificate.
+Clients without a configured TLS CA use system trust and normal hostname verification. HTTPS browsers also use normal certificate verification.
 
 Configuration values can use inline content or external files:
 

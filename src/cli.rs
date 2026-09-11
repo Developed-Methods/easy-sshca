@@ -14,7 +14,7 @@ use std::{
 };
 use tonic::{
     Request,
-    transport::{Certificate, Channel, ClientTlsConfig},
+    transport::{Channel, ClientTlsConfig},
 };
 use zeroize::Zeroizing;
 
@@ -108,6 +108,22 @@ pub enum Server {
         folder: PathBuf,
         #[arg(long)]
         admin_api_key_file: Option<PathBuf>,
+        #[arg(
+            long,
+            alias = "server-address",
+            default_value = "localhost",
+            help = "Address used in generated client configs (HOST[:PORT] or HTTPS origin)"
+        )]
+        server: String,
+        #[arg(long, help = "Override the port in the server address")]
+        port: Option<u16>,
+        #[arg(
+            long,
+            help = "gRPC bind address (default: 127.0.0.1 and the server address port)"
+        )]
+        rpc_listen: Option<std::net::SocketAddr>,
+        #[arg(long, help = "HTTPS bind address (default: 127.0.0.1:9444)")]
+        https_listen: Option<std::net::SocketAddr>,
     },
     Start {
         #[arg(long)]
@@ -426,12 +442,16 @@ fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> 
 }
 pub async fn channel(c: &ClientConfig) -> anyhow::Result<Channel> {
     c.validate()?;
-    let mut tls = ClientTlsConfig::new().with_native_roots();
-    if let Some(pem) = c.tls_pem()? {
-        tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem));
-    }
-    Ok(Channel::from_shared(c.server.clone())?
-        .tls_config(tls)?
+    let endpoint = Channel::from_shared(c.server.clone())?;
+    let endpoint = if let Some(pem) = c.tls_pem()? {
+        endpoint.tls_config_with_verifier(
+            ClientTlsConfig::new(),
+            std::sync::Arc::new(crate::tls::CertificateVerifier::from_pem(&pem)?),
+        )?
+    } else {
+        endpoint.tls_config(ClientTlsConfig::new().with_native_roots())?
+    };
+    Ok(endpoint
         .timeout(Duration::from_secs(10))
         .connect_timeout(Duration::from_secs(10))
         .connect()
@@ -604,12 +624,23 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     name,
                     folder,
                     admin_api_key_file,
+                    server,
+                    port,
+                    rpc_listen,
+                    https_listen,
                 },
         } => {
             use std::os::unix::fs::DirBuilderExt;
             if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
                 bail!("instance name requires 1–128 printable characters");
             }
+            let server_address = config::server_address(&server, port)?;
+            let server_port = url::Url::parse(&server_address)?
+                .port_or_known_default()
+                .unwrap();
+            let rpc_listen = rpc_listen.unwrap_or(([127, 0, 0, 1], server_port).into());
+            let https_listen =
+                https_listen.unwrap_or(([127, 0, 0, 1], config::DEFAULT_HTTPS_PORT).into());
             let folder = config::resolve(&folder, Path::new("."))?;
             let executable =
                 std::env::current_exe().context("cannot locate the server executable")?;
@@ -660,8 +691,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 let server = config::ServerConfig {
                     version: 1,
                     database: PathBuf::from("ca.db"),
-                    rpc_listen: "127.0.0.1:9443".parse()?,
-                    https_listen: "127.0.0.1:9444".parse()?,
+                    server: server_address.clone(),
+                    rpc_listen,
+                    https_listen,
                     tls: config::Tls {
                         certificate: None,
                         certificate_pem: Some(tls.cert.pem()),
@@ -678,7 +710,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 config::exclusive(&server_config, server_yaml.as_bytes(), 0o600)?;
                 let client = ClientConfig {
                     version: 1,
-                    server: "https://localhost:9443".into(),
+                    server: server_address.clone(),
                     api_key: Some(admin.to_string()),
                     api_key_file: None,
                     bootstrap_secret: Some(secret.to_string()),
@@ -700,7 +732,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 json,
                 serde_json::json!({"database":db,"server_config":server_config,"admin_config":admin_config,"start_command":start_command,"unlock_command":unlock_command}),
                 &format!(
-                    "Initialized {}\nServer configuration: {}\nAdmin configuration: {}\nTLS: self-signed for localhost (listeners use loopback)\n\nStart the server:\n{}\n\nThen unlock it from another terminal:\n{}",
+                    "Initialized {}\nServer configuration: {}\nAdmin configuration: {}\nServer address: {server_address}\nListeners: gRPC {rpc_listen}, HTTPS {https_listen}\nTLS: self-signed\n\nStart the server:\n{}\n\nThen unlock it from another terminal:\n{}",
                     folder.display(),
                     server_config.display(),
                     admin_config.display(),
@@ -1020,6 +1052,9 @@ async fn export_access_token(
     };
     let mut staged = config::staged(path, b"")?;
     let mut reply = rpc(admin, "CreateAccessToken", cmd).await?;
+    if !reply.server.is_empty() {
+        client.server = std::mem::take(&mut reply.server);
+    }
     client.api_key = Some(std::mem::take(&mut reply.api_key));
     let write = (|| -> anyhow::Result<()> {
         let text = client.serialize_for(path)?;
