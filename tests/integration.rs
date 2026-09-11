@@ -1187,10 +1187,14 @@ async fn ca_import_accepts_files_and_stdin_without_logging_keys() {
     let pem = ca.to_openssh(ssh_key::LineEnding::LF).unwrap();
     let file = s.dir.path().join("existing-ca");
     config::exclusive(&file, pem.as_bytes(), 0o600).unwrap();
+    let stdin_ca = easy_sshca::signing::generate("PRIVATE_KEY_COMMENT_CANARY").unwrap();
+    let stdin_pem = stdin_ca.to_openssh(ssh_key::LineEnding::LF).unwrap();
+    let dash_ca = easy_sshca::signing::generate("PRIVATE_KEY_COMMENT_CANARY").unwrap();
+    let dash_pem = dash_ca.to_openssh(ssh_key::LineEnding::LF).unwrap();
     for (name, source, input) in [
         ("from-file", vec!["--file", file.to_str().unwrap()], None),
-        ("from-stdin", vec!["--stdin"], Some(pem.as_str())),
-        ("from-dash", vec!["--file", "-"], Some(pem.as_str())),
+        ("from-stdin", vec!["--stdin"], Some(stdin_pem.as_str())),
+        ("from-dash", vec!["--file", "-"], Some(dash_pem.as_str())),
     ] {
         let mut args = vec!["admin", "zone", "import", name];
         args.extend(source);
@@ -1203,7 +1207,10 @@ async fn ca_import_accepts_files_and_stdin_without_logging_keys() {
         let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
             reply["result"]["resources"][0]["fingerprint"],
-            ca.fingerprint(ssh_key::HashAlg::Sha256).to_string()
+            easy_sshca::signing::import(input.unwrap_or(pem.as_str()))
+                .unwrap()
+                .fingerprint(ssh_key::HashAlg::Sha256)
+                .to_string()
         );
         assert!(!String::from_utf8_lossy(&output.stdout).contains("PRIVATE_KEY_COMMENT_CANARY"));
         assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_KEY_COMMENT_CANARY"));

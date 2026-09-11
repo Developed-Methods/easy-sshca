@@ -836,3 +836,132 @@ fn invalid_imports_do_not_create_zones() {
     assert_eq!(zones.resources.len(), 1);
     assert_eq!(zones.resources[0].name, "production");
 }
+
+#[test]
+fn duplicate_ca_imports_are_atomic_and_ignore_comments_and_zone_state() {
+    let mut f = Fixture::new();
+    let pem: String =
+        f.db.connection
+            .query_row(
+                "SELECT private_key FROM zones WHERE name='production'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    let mut ca = signing::import(&pem).unwrap();
+    for active in [true, false] {
+        f.db.execute(
+            "UpdateZone",
+            &f.admin,
+            &Command {
+                name: "production".into(),
+                active: Some(active),
+                ..cmd()
+            },
+        )
+        .unwrap();
+        for comment in ["production", "different comment"] {
+            ca.set_comment(comment);
+            let request = Command {
+                name: "restricted".into(),
+                secret: ca
+                    .to_openssh(ssh_key::LineEnding::CRLF)
+                    .unwrap()
+                    .to_string(),
+                max_duration: 60,
+                ..cmd()
+            };
+            let error = f.db.execute("ImportZone", &f.admin, &request).unwrap_err();
+            assert_eq!(error.code, Code::AlreadyExists);
+            assert_eq!(error.reason, "DUPLICATE_CA");
+            let saved: u64 =
+                f.db.connection
+                    .query_row(
+                        "SELECT count(*) FROM idempotency_records WHERE request_id=?1",
+                        [&request.request_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+            assert_eq!(saved, 0);
+        }
+    }
+    assert_eq!(
+        f.db.execute("ListZones", &f.admin, &cmd())
+            .unwrap()
+            .resources
+            .len(),
+        1
+    );
+    f.db.execute(
+        "ImportZone",
+        &f.admin,
+        &Command {
+            name: "restricted".into(),
+            secret: signing::generate("fresh CA")
+                .unwrap()
+                .to_openssh(ssh_key::LineEnding::LF)
+                .unwrap()
+                .to_string(),
+            max_duration: 60,
+            ..cmd()
+        },
+    )
+    .unwrap();
+}
+
+fn assert_ca_indexes(db: &Database) {
+    for column in ["fingerprint", "public_key"] {
+        let sql = format!(
+            "INSERT INTO zones SELECT 'duplicate','duplicate',private_key,{}, {},max_duration,1,0,created_at,updated_at FROM zones WHERE name='production'",
+            if column == "public_key" {
+                "public_key"
+            } else {
+                "'different public key'"
+            },
+            if column == "fingerprint" {
+                "fingerprint"
+            } else {
+                "'different fingerprint'"
+            }
+        );
+        let error = db.connection.execute(&sql, []).unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ConstraintViolation)
+        );
+    }
+}
+
+#[test]
+fn ca_uniqueness_is_enforced_on_new_and_existing_databases() {
+    let f = Fixture::new();
+    assert_ca_indexes(&f.db);
+    f.db.connection
+        .execute_batch("DROP INDEX zone_ca_public_key; DROP INDEX zone_ca_fingerprint;")
+        .unwrap();
+    drop(f.db);
+    for _ in 0..2 {
+        let db = Database::open(&f.dir.path().join("ca.db"), &f.secret).unwrap();
+        assert_ca_indexes(&db);
+    }
+}
+
+#[test]
+fn existing_duplicate_ca_keys_prevent_unlock_without_partial_migration() {
+    let f = Fixture::new();
+    f.db.connection
+        .execute_batch("DROP INDEX zone_ca_public_key; DROP INDEX zone_ca_fingerprint;")
+        .unwrap();
+    f.db.connection.execute(
+        "INSERT INTO zones SELECT 'duplicate','restricted',private_key,public_key,fingerprint,max_duration,1,0,created_at,updated_at FROM zones WHERE name='production'", [],
+    ).unwrap();
+    drop(f.db);
+    let path = f.dir.path().join("ca.db");
+    let before = std::fs::read(&path).unwrap();
+    let error = Database::open(&path, &f.secret).err().unwrap();
+    assert_eq!(error.code, Code::FailedPrecondition);
+    assert_eq!(error.reason, "DUPLICATE_CA");
+    assert!(error.message.contains("production"));
+    assert!(error.message.contains("restricted"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
