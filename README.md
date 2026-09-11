@@ -143,9 +143,12 @@ scp ./my-ca/ca.db root@ca.example.com:/var/lib/easy-sshca/ca.db
 scp ./my-ca/server.yaml root@ca.example.com:/etc/easy-sshca/server.yaml
 ```
 
-Start the server on the host:
+For systemd, use the [example unit and installation instructions](example/README.md), including the required unlimited memory-lock setting.
+
+To start the server directly, first allow unlimited locked memory in its shell:
 
 ```sh
+ulimit -l unlimited
 easy-sshca server start --config /etc/easy-sshca/server.yaml
 ```
 
