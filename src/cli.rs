@@ -593,7 +593,6 @@ pub async fn rpc(c: &ClientConfig, op: &str, cmd: Command) -> anyhow::Result<Rep
     Ok(response.into_inner())
 }
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    crate::memory::protect()?;
     let path = cli
         .config
         .clone()

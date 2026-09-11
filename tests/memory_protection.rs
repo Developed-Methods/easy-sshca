@@ -25,6 +25,35 @@ fn refuses_secrets_when_memory_cannot_be_locked() {
 }
 
 #[test]
+fn server_init_does_not_require_memory_locking() {
+    let directory = tempfile::tempdir().unwrap();
+    let folder = directory.path().join("instance");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_easy-sshca"));
+    command
+        .args(["server", "init", "--name", "Test CA", "--folder"])
+        .arg(&folder);
+    unsafe {
+        command.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_MEMLOCK, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(folder.join("server.yaml").is_file());
+}
+
+#[test]
 fn kernel_protections_cover_existing_and_future_allocations() {
     // Keep process-wide changes outside the parent test runner.
     const CHILD: &str = "EASY_SSHCA_MEMORY_TEST_CHILD";
