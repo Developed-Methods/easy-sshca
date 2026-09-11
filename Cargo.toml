@@ -17,6 +17,7 @@ fs2 = "0.4"
 hex = "0.4"
 home = "0.5"
 humantime = "2"
+indoc = "2"
 libc = "0.2"
 prost = "0.14"
 qrcode = { version = "0.14", default-features = false }

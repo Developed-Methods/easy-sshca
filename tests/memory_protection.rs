@@ -1,4 +1,5 @@
 #![cfg(target_os = "linux")]
+use easy_sshca::protocol::Operation;
 
 use std::{os::unix::process::CommandExt, process::Command};
 
@@ -101,15 +102,15 @@ fn kernel_protections_cover_existing_and_future_allocations() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("ca.db");
     let secret = easy_sshca::auth::random_secret();
-    let admin = easy_sshca::auth::new_key("ad");
+    let admin = easy_sshca::auth::new_key(easy_sshca::auth::KeyKind::Admin);
     easy_sshca::storage::Database::initialize(&path, &secret, &admin, "memory test").unwrap();
     let mut database = easy_sshca::storage::Database::open(&path, &secret).unwrap();
     database
         .execute(
-            "CreateZone",
+            Operation::CreateZone,
             &admin,
             &easy_sshca::protocol::Command {
-                request_id: easy_sshca::auth::id(),
+                request_id: easy_sshca::auth::new_id(),
                 name: "protected".into(),
                 max_duration: 3600,
                 ..Default::default()

@@ -1,3 +1,4 @@
+use easy_sshca::protocol::Operation;
 use easy_sshca::{
     auth, cli,
     config::{self, ClientConfig},
@@ -11,7 +12,7 @@ use std::{
 };
 fn cmd() -> Command {
     Command {
-        request_id: auth::id(),
+        request_id: auth::new_id(),
         ..Default::default()
     }
 }
@@ -45,7 +46,7 @@ impl Server {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ca.db");
         let secret = auth::random_secret().to_string();
-        let admin = auth::new_key("ad").to_string();
+        let admin = auth::new_key(auth::KeyKind::Admin).to_string();
         Database::initialize(&db, &secret, &admin, "Integration CA").unwrap();
         let cert = dir.path().join("tls.crt");
         let key = dir.path().join("tls.key");
@@ -97,7 +98,10 @@ impl Server {
     }
     async fn wait(&self) {
         for _ in 0..100 {
-            if cli::rpc(&self.client, "GetStatus", cmd()).await.is_ok() {
+            if cli::rpc(&self.client, Operation::GetStatus, cmd())
+                .await
+                .is_ok()
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
@@ -111,7 +115,7 @@ impl Server {
         assert_eq!(
             cli::rpc(
                 &self.client,
-                "Unlock",
+                Operation::Unlock,
                 Command {
                     secret: self.secret.clone(),
                     ..cmd()
@@ -137,7 +141,7 @@ impl Server {
     async fn user(&self) -> ClientConfig {
         cli::rpc(
             &self.client,
-            "CreateZone",
+            Operation::CreateZone,
             Command {
                 name: "production".into(),
                 max_duration: 86400,
@@ -148,7 +152,7 @@ impl Server {
         .unwrap();
         cli::rpc(
             &self.client,
-            "CreateUser",
+            Operation::CreateUser,
             Command {
                 name: "alice".into(),
                 max_duration: 86400,
@@ -159,7 +163,7 @@ impl Server {
         .unwrap();
         cli::rpc(
             &self.client,
-            "GrantZone",
+            Operation::GrantZone,
             Command {
                 user: "alice".into(),
                 zone: "production".into(),
@@ -170,7 +174,7 @@ impl Server {
         .unwrap();
         let key = cli::rpc(
             &self.client,
-            "CreateAccessToken",
+            Operation::CreateAccessToken,
             Command {
                 user: "alice".into(),
                 name: "laptop".into(),
@@ -260,29 +264,29 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         503
     );
     for op in [
-        "CreateZone",
-        "ImportZone",
-        "ListZones",
-        "UpdateZone",
-        "RemoveZone",
-        "CreateUser",
-        "ListUsers",
-        "ListUserZones",
-        "UpdateUser",
-        "RemoveUser",
-        "GrantZone",
-        "RevokeZone",
-        "CreateAccessToken",
-        "ListAccessTokens",
-        "UpdateAccessToken",
-        "RemoveAccessToken",
-        "ClearTotp",
-        "RotateAdminKey",
-        "BeginTotpEnrollment",
-        "ConfirmTotpEnrollment",
-        "RotateToken",
-        "SignCertificate",
-        "GetPublicKey",
+        Operation::CreateZone,
+        Operation::ImportZone,
+        Operation::ListZones,
+        Operation::UpdateZone,
+        Operation::RemoveZone,
+        Operation::CreateUser,
+        Operation::ListUsers,
+        Operation::ListUserZones,
+        Operation::UpdateUser,
+        Operation::RemoveUser,
+        Operation::GrantZone,
+        Operation::RevokeZone,
+        Operation::CreateAccessToken,
+        Operation::ListAccessTokens,
+        Operation::UpdateAccessToken,
+        Operation::RemoveAccessToken,
+        Operation::ClearTotp,
+        Operation::RotateAdminKey,
+        Operation::BeginTotpEnrollment,
+        Operation::ConfirmTotpEnrollment,
+        Operation::RotateToken,
+        Operation::SignCertificate,
+        Operation::GetPublicKey,
     ] {
         assert_eq!(
             status(&cli::rpc(&s.client, op, cmd()).await.unwrap_err()),
@@ -293,7 +297,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     assert!(
         cli::rpc(
             &s.client,
-            "Unlock",
+            Operation::Unlock,
             Command {
                 secret: auth::random_secret().to_string(),
                 ..cmd()
@@ -303,7 +307,10 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         .is_err()
     );
     assert_eq!(
-        cli::rpc(&s.client, "GetStatus", cmd()).await.unwrap().state,
+        cli::rpc(&s.client, Operation::GetStatus, cmd())
+            .await
+            .unwrap()
+            .state,
         "LOCKED"
     );
     let mut untrusted = s.client.clone();
@@ -312,24 +319,24 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     s.unlock().await;
     let user = s.user().await;
     for op in [
-        "CreateZone",
-        "ImportZone",
-        "ListZones",
-        "UpdateZone",
-        "RemoveZone",
-        "CreateUser",
-        "ListUsers",
-        "ListUserZones",
-        "UpdateUser",
-        "RemoveUser",
-        "GrantZone",
-        "RevokeZone",
-        "CreateAccessToken",
-        "ListAccessTokens",
-        "UpdateAccessToken",
-        "RemoveAccessToken",
-        "ClearTotp",
-        "RotateAdminKey",
+        Operation::CreateZone,
+        Operation::ImportZone,
+        Operation::ListZones,
+        Operation::UpdateZone,
+        Operation::RemoveZone,
+        Operation::CreateUser,
+        Operation::ListUsers,
+        Operation::ListUserZones,
+        Operation::UpdateUser,
+        Operation::RemoveUser,
+        Operation::GrantZone,
+        Operation::RevokeZone,
+        Operation::CreateAccessToken,
+        Operation::ListAccessTokens,
+        Operation::UpdateAccessToken,
+        Operation::RemoveAccessToken,
+        Operation::ClearTotp,
+        Operation::RotateAdminKey,
     ] {
         assert_eq!(
             status(&cli::rpc(&user, op, cmd()).await.unwrap_err()),
@@ -338,10 +345,10 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         );
     }
     for op in [
-        "BeginTotpEnrollment",
-        "ConfirmTotpEnrollment",
-        "RotateToken",
-        "SignCertificate",
+        Operation::BeginTotpEnrollment,
+        Operation::ConfirmTotpEnrollment,
+        Operation::RotateToken,
+        Operation::SignCertificate,
     ] {
         assert_eq!(
             status(&cli::rpc(&s.client, op, cmd()).await.unwrap_err()),
@@ -359,7 +366,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     let public = fetched.text().await.unwrap();
     let rpc = cli::rpc(
         &user,
-        "GetPublicKey",
+        Operation::GetPublicKey,
         Command {
             zone: "production".into(),
             ..cmd()
@@ -397,14 +404,17 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     s.process = Server::spawn(s.dir.path());
     s.wait().await;
     assert_eq!(
-        cli::rpc(&s.client, "GetStatus", cmd()).await.unwrap().state,
+        cli::rpc(&s.client, Operation::GetStatus, cmd())
+            .await
+            .unwrap()
+            .state,
         "LOCKED"
     );
     s.unlock().await;
     assert_eq!(
         cli::rpc(
             &user,
-            "GetPublicKey",
+            Operation::GetPublicKey,
             Command {
                 zone: "production".into(),
                 ..cmd()
@@ -418,7 +428,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     let payload_secret = "DO_NOT_LOG_REQUEST_PAYLOAD";
     let rejected = cli::rpc(
         &user,
-        "SignCertificate",
+        Operation::SignCertificate,
         Command {
             request_id: payload_secret.into(),
             secret: payload_secret.into(),
@@ -429,7 +439,9 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     )
     .await;
     assert!(rejected.is_err());
-    let enrollment = cli::rpc(&user, "BeginTotpEnrollment", cmd()).await.unwrap();
+    let enrollment = cli::rpc(&user, Operation::BeginTotpEnrollment, cmd())
+        .await
+        .unwrap();
     assert!(!enrollment.secret.is_empty());
     s.stop();
     let logs = std::fs::read_to_string(s.dir.path().join("server.log")).unwrap();
@@ -590,11 +602,15 @@ async fn cli_configuration_signing_rotation_and_recovery() {
         "{}",
         String::from_utf8_lossy(&rotated.stderr)
     );
-    assert!(cli::rpc(&user, "BeginTotpEnrollment", cmd()).await.is_err());
+    assert!(
+        cli::rpc(&user, Operation::BeginTotpEnrollment, cmd())
+            .await
+            .is_err()
+    );
     let current = ClientConfig::load(&path).unwrap();
     let mut candidate = current.clone();
     let mut rotation = cmd();
-    rotation.replacement_key = auth::new_key("at").to_string();
+    rotation.replacement_key = auth::new_key(auth::KeyKind::AccessToken).to_string();
     candidate.api_key = Some(rotation.replacement_key.clone());
     let pending =
         serde_json::json!({"operation":"RotateToken","command":rotation,"config":candidate});
@@ -604,7 +620,9 @@ async fn cli_configuration_signing_rotation_and_recovery() {
         0o600,
     )
     .unwrap();
-    cli::rpc(&current, "RotateToken", rotation).await.unwrap();
+    cli::rpc(&current, Operation::RotateToken, rotation)
+        .await
+        .unwrap();
     let recovered = run_cli(&path, &["rotate-token"], None);
     assert!(
         recovered.status.success(),
@@ -622,12 +640,12 @@ async fn worker_unlock_races_and_revocation_order() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("ca.db");
     let secret = auth::random_secret();
-    let admin = auth::new_key("ad");
+    let admin = auth::new_key(auth::KeyKind::Admin);
     Database::initialize(&db, &secret, &admin, "race test").unwrap();
     let s = easy_sshca::server::State::new(db, 16, Duration::from_secs(10)).unwrap();
     let (a, b) = tokio::join!(
         s.call(
-            "Unlock",
+            Operation::Unlock,
             String::new(),
             Command {
                 secret: secret.to_string(),
@@ -636,7 +654,7 @@ async fn worker_unlock_races_and_revocation_order() {
             None
         ),
         s.call(
-            "Unlock",
+            Operation::Unlock,
             String::new(),
             Command {
                 secret: secret.to_string(),
@@ -647,7 +665,7 @@ async fn worker_unlock_races_and_revocation_order() {
     );
     assert!(a.is_ok() ^ b.is_ok());
     s.call(
-        "CreateZone",
+        Operation::CreateZone,
         admin.to_string(),
         Command {
             name: "test".into(),
@@ -659,7 +677,7 @@ async fn worker_unlock_races_and_revocation_order() {
     .await
     .unwrap();
     s.call(
-        "CreateUser",
+        Operation::CreateUser,
         admin.to_string(),
         Command {
             name: "alice".into(),
@@ -671,7 +689,7 @@ async fn worker_unlock_races_and_revocation_order() {
     .await
     .unwrap();
     s.call(
-        "GrantZone",
+        Operation::GrantZone,
         admin.to_string(),
         Command {
             user: "alice".into(),
@@ -684,7 +702,7 @@ async fn worker_unlock_races_and_revocation_order() {
     .unwrap();
     let token = s
         .call(
-            "CreateAccessToken",
+            Operation::CreateAccessToken,
             admin.to_string(),
             Command {
                 user: "alice".into(),
@@ -703,7 +721,7 @@ async fn worker_unlock_races_and_revocation_order() {
         .to_openssh()
         .unwrap();
     let sign = s.call(
-        "SignCertificate",
+        Operation::SignCertificate,
         token.clone(),
         Command {
             zone: "test".into(),
@@ -713,7 +731,7 @@ async fn worker_unlock_races_and_revocation_order() {
         None,
     );
     let remove = s.call(
-        "RemoveAccessToken",
+        Operation::RemoveAccessToken,
         admin.to_string(),
         Command {
             user: "alice".into(),
@@ -727,7 +745,7 @@ async fn worker_unlock_races_and_revocation_order() {
     assert!(removed.is_ok());
     assert!(
         s.call(
-            "SignCertificate",
+            Operation::SignCertificate,
             token,
             Command {
                 zone: "test".into(),
@@ -746,13 +764,13 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ca.db");
     let secret = auth::random_secret();
-    let admin = auth::new_key("ad");
+    let admin = auth::new_key(auth::KeyKind::Admin);
     Database::initialize(&path, &secret, &admin, "contention").unwrap();
     let state =
         easy_sshca::server::State::new(path.clone(), 1, Duration::from_millis(100)).unwrap();
     state
         .call(
-            "Unlock",
+            Operation::Unlock,
             String::new(),
             Command {
                 secret: secret.to_string(),
@@ -767,7 +785,10 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
         .pragma_update(
             None,
             "key",
-            format!("x'{}'", hex::encode(&*auth::bootstrap(&secret).unwrap())),
+            format!(
+                "x'{}'",
+                hex::encode(&*auth::parse_bootstrap_secret(&secret).unwrap())
+            ),
         )
         .unwrap();
     blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
@@ -776,7 +797,7 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
     let first = tokio::spawn(async move {
         first
             .call(
-                "CreateUser",
+                Operation::CreateUser,
                 first_admin,
                 Command {
                     name: "first".into(),
@@ -793,7 +814,7 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
     let second = tokio::spawn(async move {
         second
             .call(
-                "CreateUser",
+                Operation::CreateUser,
                 second_admin,
                 Command {
                     name: "expired".into(),
@@ -807,7 +828,7 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     let error = state
         .call(
-            "CreateUser",
+            Operation::CreateUser,
             admin.to_string(),
             Command {
                 name: "overflow".into(),
@@ -824,7 +845,7 @@ async fn database_contention_bounds_queue_and_does_not_commit_expired_jobs() {
     blocker.execute_batch("ROLLBACK").unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     let list = state
-        .call("ListUsers", admin.to_string(), cmd(), None)
+        .call(Operation::ListUsers, admin.to_string(), cmd(), None)
         .await
         .unwrap();
     assert!(
@@ -846,7 +867,7 @@ async fn crash_recovery_and_request_limits() {
         .unwrap();
     let signed = cli::rpc(
         &user,
-        "SignCertificate",
+        Operation::SignCertificate,
         Command {
             zone: "production".into(),
             public_key: public.clone(),
@@ -862,7 +883,7 @@ async fn crash_recovery_and_request_limits() {
     s.unlock().await;
     let next = cli::rpc(
         &user,
-        "SignCertificate",
+        Operation::SignCertificate,
         Command {
             zone: "production".into(),
             public_key: public,
@@ -882,7 +903,7 @@ async fn crash_recovery_and_request_limits() {
     );
     let oversized = cli::rpc(
         &user,
-        "SignCertificate",
+        Operation::SignCertificate,
         Command {
             public_key: "x".repeat(70000),
             ..cmd()
@@ -892,7 +913,7 @@ async fn crash_recovery_and_request_limits() {
     assert!(oversized.is_err());
     let malformed = cli::rpc(
         &user,
-        "SignCertificate",
+        Operation::SignCertificate,
         Command {
             request_id: "invalid".into(),
             ..Default::default()
@@ -906,7 +927,7 @@ async fn crash_recovery_and_request_limits() {
     )
     .unwrap();
     assert_eq!(detail.reason, "INVALID_INPUT");
-    auth::request_id(&detail.request_id).unwrap();
+    auth::validate_request_id(&detail.request_id).unwrap();
     s.stop();
     for entry in std::fs::read_dir(s.dir.path()).unwrap() {
         let entry = entry.unwrap();
@@ -960,7 +981,9 @@ async fn cli_tables_hide_uuids_unless_verbose() {
     };
     assert_eq!(human(&["admin", "zone", "list"]).trim(), "No results.");
     let _user = s.user().await;
-    let reply = cli::rpc(&s.client, "ListZones", cmd()).await.unwrap();
+    let reply = cli::rpc(&s.client, Operation::ListZones, cmd())
+        .await
+        .unwrap();
     let id = &reply.resources[0].id;
     let table = human(&["admin", "zone", "list"]);
     for value in [
@@ -993,7 +1016,7 @@ async fn cli_tables_hide_uuids_unless_verbose() {
         "true",
         "--verbose",
     ]);
-    auth::request_id(verbose.trim().strip_prefix("OK ").unwrap()).unwrap();
+    auth::validate_request_id(verbose.trim().strip_prefix("OK ").unwrap()).unwrap();
     let output = run_cli(&path, &["admin", "zone", "list"], None);
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -1146,7 +1169,7 @@ async fn exported_token_configs_are_portable_and_support_rotation() {
         assert!(
             cli::rpc(
                 &moved_client,
-                "GetPublicKey",
+                Operation::GetPublicKey,
                 Command {
                     zone: "production".into(),
                     ..cmd()
@@ -1169,14 +1192,14 @@ async fn exported_token_configs_are_portable_and_support_rotation() {
         assert_ne!(rotated.api_key, moved_client.api_key);
         assert_eq!(rotated.tls_ca_pem, moved_client.tls_ca_pem);
         assert!(
-            cli::rpc(&rotated, "BeginTotpEnrollment", cmd())
+            cli::rpc(&rotated, Operation::BeginTotpEnrollment, cmd())
                 .await
                 .is_ok()
         );
         assert!(
             cli::rpc(
                 &rotated,
-                "GetPublicKey",
+                Operation::GetPublicKey,
                 Command {
                     zone: "production".into(),
                     ..cmd()
@@ -1226,7 +1249,7 @@ async fn token_export_checks_destination_before_creating_credentials() {
     assert_eq!(std::fs::read(&destination).unwrap(), b"keep this file");
     let before = cli::rpc(
         &s.client,
-        "ListAccessTokens",
+        Operation::ListAccessTokens,
         Command {
             user: "alice".into(),
             ..cmd()

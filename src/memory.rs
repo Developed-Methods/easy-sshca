@@ -1,17 +1,15 @@
+//! Process-wide protections that keep secrets out of core dumps and swap.
+
 use crate::error::{Error, Result};
-use std::sync::OnceLock;
 
 fn failure(message: impl Into<String>) -> Error {
-    Error::new(
-        tonic::Code::FailedPrecondition,
-        "MEMORY_PROTECTION_FAILED",
-        message,
-    )
+    Error::failed_precondition("MEMORY_PROTECTION_FAILED", message)
 }
 
 /// Disable kernel core dumps, including dumps sent to a pipe collector.
+#[cfg(target_os = "linux")]
 pub fn disable_dumps() -> Result<()> {
-    #[cfg(target_os = "linux")]
+    // SAFETY: plain prctl and setrlimit calls with valid constant arguments.
     unsafe {
         if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
             return Err(failure(format!(
@@ -22,33 +20,36 @@ pub fn disable_dumps() -> Result<()> {
         if libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) != 0 {
             return Err(failure("process dumpability is not disabled"));
         }
-        let limit = libc::rlimit {
+        let no_core = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0 {
+        if libc::setrlimit(libc::RLIMIT_CORE, &no_core) != 0 {
             return Err(failure(format!(
                 "cannot disable core files: {}",
                 std::io::Error::last_os_error()
             )));
         }
-        Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
-    Err(failure("secret memory protection requires Linux"))
+    Ok(())
 }
 
-/// Protect Rust heap allocations, stacks, and temporary secret copies.
-/// Call before loading secrets. Do not fork, unlock memory, or change credentials afterward.
+/// Lock all current and future process memory so secrets are never swapped.
+///
+/// Call before loading secrets. Do not fork, unlock memory, or change
+/// credentials afterward. Repeated calls are no-ops once locking succeeds.
+#[cfg(target_os = "linux")]
 pub fn protect() -> Result<()> {
-    disable_dumps()?;
+    use std::sync::OnceLock;
     static LOCKED: OnceLock<()> = OnceLock::new();
+
+    disable_dumps()?;
     if LOCKED.get().is_some() {
         return Ok(());
     }
-    #[cfg(target_os = "linux")]
+    // SAFETY: getrlimit writes into a zeroed rlimit; mlockall takes only flags.
     unsafe {
-        let mut limit = std::mem::zeroed();
+        let mut limit: libc::rlimit = std::mem::zeroed();
         if libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut limit) != 0 {
             return Err(failure("cannot read the locked-memory limit"));
         }
@@ -65,9 +66,17 @@ pub fn protect() -> Result<()> {
                 std::io::Error::last_os_error()
             )));
         }
-        let _ = LOCKED.set(());
-        Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
+    let _ = LOCKED.set(());
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn disable_dumps() -> Result<()> {
+    Err(failure("secret memory protection requires Linux"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn protect() -> Result<()> {
     Err(failure("secret memory protection requires Linux"))
 }
