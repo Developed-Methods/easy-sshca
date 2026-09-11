@@ -168,9 +168,21 @@ defaults:
   duration: null
 ```
 
-CAUTION: the init certificate covers `localhost`, `127.0.0.1`, and `::1` only. Connecting by any other name fails with `certificate not valid for name`.
+The init certificate is a self-signed leaf. The client pins its public key, so changing the server address does not require reissuing it.
 
-To reach the CA by hostname, reissue `tls.certificate_pem` and `tls.private_key_pem` for that name, then copy the new certificate into `tls_ca_pem`. Otherwise forward the port and keep `server: https://localhost:9443`:
+With a CA-issued server certificate, put the issuing CA certificate bundle in `tls_ca_pem` or `tls_ca`.
+The client verifies the certificate chain, validity, and server name.
+Only a single self-signed leaf enables public-key pinning; CA certificates and bundles use hostname verification.
+
+For port forwarding with a CA-issued certificate, set `tls_server_name` to the name on that certificate:
+
+```yaml
+server: https://localhost:9443
+tls_server_name: ca.example.com
+```
+
+This override also applies when using native roots without `tls_ca` or `tls_ca_pem`.
+Forward the port with:
 
 ```sh
 ssh -L 9443:localhost:9443 ca.example.com

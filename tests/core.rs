@@ -790,6 +790,7 @@ fn client_config_accepts_inline_tls_and_rejects_ambiguous_trust() {
         bootstrap_secret_file: None,
         tls_ca: None,
         tls_ca_pem: Some(cert.clone()),
+        tls_server_name: None,
         defaults: Default::default(),
     };
     for extension in ["yaml", "json"] {
@@ -1151,4 +1152,22 @@ fn existing_duplicate_ca_keys_prevent_unlock_without_partial_migration() {
     assert!(error.message.contains("production"));
     assert!(error.message.contains("restricted"));
     assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn tls_server_name_config_validation_and_round_trip() {
+    let base = r#"{"version":1,"server":"https://localhost:9443"}"#;
+    let mut config: config::ClientConfig = serde_json::from_str(base).unwrap();
+    assert!(config.tls_server_name.is_none());
+    for name in ["ca.example", "127.0.0.1", "::1"] {
+        config.tls_server_name = Some(name.into());
+        config.validate().unwrap();
+        let text = serde_json::to_string(&config).unwrap();
+        let restored: config::ClientConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(restored.tls_server_name.as_deref(), Some(name));
+    }
+    for name in ["", "https://ca.example", "ca.example:9443", "a b"] {
+        config.tls_server_name = Some(name.into());
+        assert!(config.validate().is_err());
+    }
 }

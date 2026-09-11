@@ -53,6 +53,8 @@ pub enum Action {
         #[arg(long)]
         tls_ca: Option<PathBuf>,
         #[arg(long)]
+        tls_server_name: Option<String>,
+        #[arg(long)]
         zone: Option<String>,
         #[arg(long)]
         public_key: Option<PathBuf>,
@@ -98,6 +100,8 @@ pub struct ConnectionArgs {
     server: Option<String>,
     #[arg(long)]
     tls_ca: Option<PathBuf>,
+    #[arg(long)]
+    tls_server_name: Option<String>,
 }
 #[derive(Subcommand)]
 pub enum Server {
@@ -425,6 +429,7 @@ fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> 
             bootstrap_secret_file: None,
             tls_ca: None,
             tls_ca_pem: None,
+            tls_server_name: None,
             defaults: Default::default(),
         }
     } else {
@@ -437,19 +442,26 @@ fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> 
         c.tls_ca = Some(config::resolve(&p, &std::env::current_dir()?)?);
         c.tls_ca_pem = None;
     }
+    if let Some(name) = overrides.tls_server_name {
+        c.tls_server_name = Some(name);
+    }
     c.validate()?;
     Ok(c)
 }
 pub async fn channel(c: &ClientConfig) -> anyhow::Result<Channel> {
     c.validate()?;
     let endpoint = Channel::from_shared(c.server.clone())?;
+    let mut tls = ClientTlsConfig::new();
+    if let Some(name) = &c.tls_server_name {
+        tls = tls.domain_name(name);
+    }
     let endpoint = if let Some(pem) = c.tls_pem()? {
         endpoint.tls_config_with_verifier(
-            ClientTlsConfig::new(),
+            tls,
             std::sync::Arc::new(crate::tls::CertificateVerifier::from_pem(&pem)?),
         )?
     } else {
-        endpoint.tls_config(ClientTlsConfig::new().with_native_roots())?
+        endpoint.tls_config(tls.with_native_roots())?
     };
     Ok(endpoint
         .timeout(Duration::from_secs(10))
@@ -716,6 +728,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     bootstrap_secret_file: None,
                     tls_ca: None,
                     tls_ca_pem: Some(tls.cert.pem()),
+                    tls_server_name: None,
                     defaults: Default::default(),
                 };
                 let yaml = client.serialize_for(&admin_config)?;
@@ -816,6 +829,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             server,
             api_key_stdin,
             tls_ca,
+            tls_server_name,
             zone,
             public_key,
             duration,
@@ -854,6 +868,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 bootstrap_secret_file: None,
                 tls_ca: tls_ca.map(|p| config::resolve(&p, &cwd)).transpose()?,
                 tls_ca_pem: None,
+                tls_server_name,
                 defaults: config::Defaults {
                     zone,
                     public_key: public_key.map(|p| config::resolve(&p, &cwd)).transpose()?,
@@ -1042,6 +1057,7 @@ async fn export_access_token(
         bootstrap_secret_file: None,
         tls_ca: None,
         tls_ca_pem: admin.tls_pem()?,
+        tls_server_name: admin.tls_server_name.clone(),
         defaults: config::Defaults {
             duration: Some(
                 humantime::format_duration(Duration::from_secs(cmd.max_duration)).to_string(),

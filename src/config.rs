@@ -51,6 +51,8 @@ pub struct ClientConfig {
     pub tls_ca: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_ca_pem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<String>,
     #[serde(default)]
     pub defaults: Defaults,
 }
@@ -169,6 +171,10 @@ impl ClientConfig {
             bail!("unsupported config version; use version 1 or upgrade easy-sshca");
         }
         validate_server(&self.server)?;
+        if let Some(name) = &self.tls_server_name {
+            rustls::pki_types::ServerName::try_from(name.as_str())
+                .context("tls_server_name must be a DNS name or IP address")?;
+        }
         if self.tls_ca.is_some() && self.tls_ca_pem.is_some() {
             bail!("configure only one of tls_ca and tls_ca_pem");
         }
