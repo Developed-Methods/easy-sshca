@@ -21,7 +21,11 @@ use zeroize::Zeroizing;
 #[derive(Parser)]
 #[command(version, about = "Encrypted SSH certificate authority")]
 pub struct Cli {
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Configuration path (use - to read YAML or JSON from stdin)"
+    )]
     pub config: Option<PathBuf>,
     #[arg(long, global = true)]
     pub json: bool,
@@ -420,7 +424,7 @@ fn resource_table(resources: &[protocol::Resource], verbose: bool) -> comfy_tabl
 }
 
 fn load(path: &Path, overrides: ConnectionArgs) -> anyhow::Result<ClientConfig> {
-    let mut c = if path.exists() {
+    let mut c = if path == Path::new("-") || path.exists() {
         ClientConfig::load(path)?
     } else if let Some(server) = &overrides.server {
         ClientConfig {
@@ -620,7 +624,47 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         .unwrap_or_else(config::default_path)?;
     let json = cli.json;
     let verbose = cli.verbose;
+    if path == Path::new("-") {
+        match &cli.command {
+            Action::Configure { .. }
+            | Action::RotateToken { .. }
+            | Action::Admin {
+                command:
+                    Admin::Key {
+                        command: AdminKey::RotateAdmin,
+                    },
+            } => bail!(
+                "this command requires a writable configuration file; --config - is not supported"
+            ),
+            Action::GenKey { .. }
+            | Action::Server {
+                command: Server::Init { .. } | Server::ResetAdmin { .. },
+            } => bail!("this command does not read configuration; --config - is not supported"),
+            Action::Sign {
+                totp_stdin: true, ..
+            }
+            | Action::Totp {
+                command: Totp::Confirm { totp_stdin: true },
+            }
+            | Action::Server {
+                command:
+                    Server::Unlock {
+                        secret_stdin: true, ..
+                    },
+            } => bail!("--config - cannot be combined with another stdin input"),
+            Action::Admin {
+                command:
+                    Admin::Zone {
+                        command: Zone::Import { source, .. },
+                    },
+            } if source.stdin || source.file.as_deref() == Some(Path::new("-")) => {
+                bail!("--config - cannot be combined with another stdin input");
+            }
+            _ => {}
+        }
+    }
     if cli.config.is_some()
+        && path != Path::new("-")
         && !path.exists()
         && !matches!(
             &cli.command,
