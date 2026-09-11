@@ -2,13 +2,14 @@ use crate::{
     auth,
     config::{self, ClientConfig},
     protocol::{self, Command, Reply},
+    terminal::{read_secret, read_totp},
 };
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -329,27 +330,6 @@ pub enum Totp {
         #[arg(long)]
         totp_stdin: bool,
     },
-}
-
-pub fn read_secret(stdin: bool, prompt: &str) -> anyhow::Result<Zeroizing<String>> {
-    let value = if stdin {
-        let mut value = String::new();
-        io::stdin().take(4097).read_to_string(&mut value)?;
-        if value.len() > 4096 {
-            bail!("secret input exceeds 4096 bytes");
-        }
-        value.trim_end_matches(['\r', '\n']).to_owned()
-    } else {
-        rpassword::prompt_password(prompt)?
-    };
-    Ok(Zeroizing::new(value))
-}
-fn read_totp(stdin: bool, prompt: &str) -> anyhow::Result<Zeroizing<String>> {
-    if stdin {
-        read_secret(true, prompt)
-    } else {
-        Ok(crate::terminal::read_totp(prompt)?)
-    }
 }
 
 fn command() -> Command {
