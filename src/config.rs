@@ -153,6 +153,23 @@ pub fn secure_read(path: &Path) -> anyhow::Result<String> {
     }
     Ok(data)
 }
+fn read_config(path: &Path) -> anyhow::Result<zeroize::Zeroizing<String>> {
+    if path != Path::new("-") {
+        return secure_read(path).map(zeroize::Zeroizing::new);
+    }
+    use std::io::Read;
+    let mut text = zeroize::Zeroizing::new(String::new());
+    std::io::stdin()
+        .lock()
+        .take(1024 * 1024 + 1)
+        .read_to_string(&mut text)
+        .context("cannot read configuration from stdin as UTF-8 text")?;
+    if text.len() > 1024 * 1024 {
+        bail!("configuration from stdin exceeds the 1 MiB file limit");
+    }
+    Ok(text)
+}
+
 pub fn validate_server(value: &str) -> anyhow::Result<()> {
     let u = url::Url::parse(value).context("invalid server URL")?;
     if u.scheme() != "https"
@@ -259,7 +276,7 @@ impl ClientConfig {
         Ok(value)
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text=zeroize::Zeroizing::new(secure_read(path).with_context(||format!("cannot load {}; run easy-sshca configure --server https://HOST:9443 --api-key-stdin",path.display()))?);
+        let text=read_config(path).with_context(||format!("cannot load {}; run easy-sshca configure --server https://HOST:9443 --api-key-stdin",path.display()))?;
         let mut config: Self = if path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
@@ -305,12 +322,12 @@ impl Drop for ClientConfig {
 }
 impl ServerConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = zeroize::Zeroizing::new(secure_read(path).with_context(|| {
+        let text = read_config(path).with_context(|| {
             format!(
                 "cannot read server configuration {}. For a new server, run easy-sshca server init --name NAME --folder NEW_FOLDER. Otherwise, select an existing file with --config PATH",
                 path.display()
             )
-        })?);
+        })?;
         let mut c: Self = serde_saphyr::from_str(&text).map_err(|_| {
             anyhow::anyhow!(
                 "invalid server YAML in {}; check field names, types and duplicate keys",

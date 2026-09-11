@@ -1383,3 +1383,47 @@ async fn ca_hostname_verification_and_port_forward_override() {
     client.tls_server_name = None;
     assert!(cli::channel(&client).await.is_err());
 }
+
+#[tokio::test]
+async fn cli_uses_piped_yaml_and_json_config_with_connection_overrides() {
+    use std::io::Write;
+    let server = Server::new().await;
+    let mut client = server.client.clone();
+    client.server = "https://unused.invalid:1".into();
+    for input in [
+        serde_saphyr::to_string(&client).unwrap(),
+        serde_json::to_string(&client).unwrap(),
+    ] {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_easy-sshca"))
+            .args([
+                "--config",
+                "-",
+                "--json",
+                "server",
+                "status",
+                "--server",
+                &server.client.server,
+            ])
+            .current_dir(server.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["result"]["state"], "LOCKED");
+        assert!(!server.dir.path().join("-").exists());
+    }
+}

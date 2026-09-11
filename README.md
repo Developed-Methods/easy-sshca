@@ -26,6 +26,17 @@ easy-sshca reads this path by default. It refuses to read the file if other user
 
 Note: to keep the file somewhere else, pass `--config PATH` to every command.
 
+For CI, pipe a decrypted YAML or JSON configuration through stdin:
+
+```sh
+sops decrypt client.enc.yaml | easy-sshca --config - sign --force
+```
+
+`--config -` also works with server configurations. Relative paths resolve from the current working directory.
+Input is limited to 1 MiB. The CLI does not save the supplied configuration.
+Commands that rewrite configuration (`configure`, `rotate-token`, and `admin key rotate-admin`) require a file path.
+Do not combine `--config -` with other stdin inputs, including `--totp-stdin`, `--secret-stdin`, or private-key imports from stdin.
+
 ### 2. Generate an SSH key
 
 The CA signs Ed25519 keys only. If you already have an Ed25519 key, skip this step and use it.
