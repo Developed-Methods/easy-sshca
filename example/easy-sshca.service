@@ -1,0 +1,28 @@
+[Unit]
+Description=easy-sshca SSH certificate authority
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=easy-sshca
+Group=easy-sshca
+ExecStart=/usr/local/bin/easy-sshca server start --config /etc/easy-sshca/server.yaml
+WorkingDirectory=/var/lib/easy-sshca
+StateDirectory=easy-sshca
+StateDirectoryMode=0700
+UMask=0077
+
+# Required: the server rejects finite locked-memory limits.
+LimitMEMLOCK=infinity
+LimitCORE=0
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
