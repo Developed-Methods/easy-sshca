@@ -173,19 +173,26 @@ impl Database {
         }
         let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         prune_audit(&tx)?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS zone_removals (zone_id TEXT PRIMARY KEY REFERENCES zones(id), removed_at INTEGER NOT NULL)",
+            [],
+        )?;
         let mut fingerprints = HashMap::new();
         let mut keys = HashMap::new();
         {
-            let mut stmt = tx.prepare("SELECT id,private_key,name,fingerprint FROM zones")?;
+            let mut stmt = tx.prepare(
+                "SELECT id,private_key,name,fingerprint,id IN (SELECT zone_id FROM zone_removals) FROM zones",
+            )?;
             for row in stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
+                    r.get::<_, bool>(4)?,
                 ))
             })? {
-                let (id, pem, name, stored_fingerprint) = row?;
+                let (id, pem, name, stored_fingerprint, removed) = row?;
                 let pem = Zeroizing::new(pem);
                 let ca = ssh_key::PrivateKey::from_openssh(pem.as_bytes())?;
                 let fingerprint = ca.fingerprint(ssh_key::HashAlg::Sha256).to_string();
@@ -205,7 +212,9 @@ impl Database {
                         format!("zone {name:?} has an inconsistent CA fingerprint"),
                     ));
                 }
-                keys.insert(id, ca);
+                if !removed {
+                    keys.insert(id, ca);
+                }
             }
         }
         tx.execute(
@@ -361,6 +370,7 @@ impl Database {
         };
         let now = auth::now();
         let mut new_ca = None;
+        let mut removed_ca = None;
         match op {
             "CreateZone" | "ImportZone" => {
                 auth::name(&c.name)?;
@@ -425,11 +435,24 @@ impl Database {
                     return Err(Error::input("an update requires a duration or state"));
                 }
                 let sql = if op == "UpdateZone" {
-                    "UPDATE zones SET max_duration=CASE WHEN ?1=0 THEN max_duration ELSE ?1 END,active=coalesce(?2,active),updated_at=?3 WHERE name=?4"
+                    "UPDATE zones SET max_duration=CASE WHEN ?1=0 THEN max_duration ELSE ?1 END,active=coalesce(?2,active),updated_at=?3 WHERE name=?4 AND id NOT IN (SELECT zone_id FROM zone_removals)"
                 } else {
                     "UPDATE users SET max_duration=CASE WHEN ?1=0 THEN max_duration ELSE ?1 END,active=coalesce(?2,active),updated_at=?3 WHERE name=?4 AND removed=0"
                 };
                 changed(tx.execute(sql, params![c.max_duration, c.active, now, c.name])?)?;
+            }
+            "RemoveZone" => {
+                let zone = zone_id(&tx, &c.name)?;
+                tx.execute(
+                    "UPDATE zones SET active=0,updated_at=?1 WHERE id=?2",
+                    params![now, zone],
+                )?;
+                tx.execute("DELETE FROM user_zones WHERE zone_id=?1", [&zone])?;
+                tx.execute(
+                    "INSERT INTO zone_removals VALUES(?1,?2)",
+                    params![zone, now],
+                )?;
+                removed_ca = Some(zone);
             }
             "RemoveUser" => {
                 let user = user_id(&tx, &c.name)?;
@@ -644,12 +667,15 @@ impl Database {
         if let Some((id, ca)) = new_ca {
             self.keys.insert(id, ca);
         }
+        if let Some(id) = removed_ca {
+            self.keys.remove(&id);
+        }
         Ok(reply)
     }
 }
 fn signing_zone(db: &Connection, zone: &str, user_id: &str) -> Result<(String, u64, u64)> {
     db.query_row(
-        "SELECT z.id,z.max_duration,z.next_serial FROM zones z JOIN user_zones g ON g.zone_id=z.id WHERE z.name=?1 AND z.active=1 AND g.user_id=?2",
+        "SELECT z.id,z.max_duration,z.next_serial FROM zones z JOIN user_zones g ON g.zone_id=z.id WHERE z.name=?1 AND z.active=1 AND z.id NOT IN (SELECT zone_id FROM zone_removals) AND g.user_id=?2",
         params![zone, user_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
@@ -674,6 +700,7 @@ pub fn is_admin(op: &str) -> bool {
             | "ImportZone"
             | "ListZones"
             | "UpdateZone"
+            | "RemoveZone"
             | "CreateUser"
             | "ListUsers"
             | "UpdateUser"
@@ -699,7 +726,11 @@ fn user_id(db: &Connection, name: &str) -> Result<String> {
 }
 fn zone_id(db: &Connection, name: &str) -> Result<String> {
     auth::name(name)?;
-    Ok(db.query_row("SELECT id FROM zones WHERE name=?1", [name], |r| r.get(0))?)
+    Ok(db.query_row(
+        "SELECT id FROM zones WHERE name=?1 AND id NOT IN (SELECT zone_id FROM zone_removals)",
+        [name],
+        |r| r.get(0),
+    )?)
 }
 struct Actor {
     id: String,
@@ -779,7 +810,7 @@ fn audit(
 fn public_key(db: &Connection, zone: &str, id: &str) -> Result<Reply> {
     auth::name(zone)?;
     let (public_key, fingerprint) = db.query_row(
-        "SELECT public_key,fingerprint FROM zones WHERE name=?1 AND active=1",
+        "SELECT public_key,fingerprint FROM zones WHERE name=?1 AND active=1 AND id NOT IN (SELECT zone_id FROM zone_removals)",
         [zone],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -813,7 +844,7 @@ fn list(db: &Connection, op: &str, c: &Command) -> Result<Reply> {
     };
     let sql = match op {
         "ListZones" => {
-            "SELECT id,name,'',max_duration,active,0,fingerprint FROM zones WHERE id>?1 ORDER BY id LIMIT ?2"
+            "SELECT id,name,'',max_duration,active,0,fingerprint FROM zones WHERE id>?1 AND id NOT IN (SELECT zone_id FROM zone_removals) ORDER BY id LIMIT ?2"
         }
         "ListUsers" => {
             "SELECT id,name,'',max_duration,active,totp_secret IS NOT NULL,'' FROM users WHERE removed=0 AND id>?1 ORDER BY id LIMIT ?2"

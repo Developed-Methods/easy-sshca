@@ -198,6 +198,9 @@ pub enum Zone {
         #[command(flatten)]
         update: Update,
     },
+    Remove {
+        name: String,
+    },
 }
 #[derive(Args)]
 #[group(required = true, multiple = false)]
@@ -508,6 +511,11 @@ pub async fn rpc(c: &ClientConfig, op: &str, cmd: Command) -> anyhow::Result<Rep
         "UpdateZone" => {
             protocol::admin_service_client::AdminServiceClient::new(channel)
                 .update_zone(request)
+                .await?
+        }
+        "RemoveZone" => {
+            protocol::admin_service_client::AdminServiceClient::new(channel)
+                .remove_zone(request)
                 .await?
         }
         "CreateUser" => {
@@ -1181,6 +1189,12 @@ fn admin_command(admin: Admin) -> anyhow::Result<(&'static str, Command)> {
             c.name = name;
             apply_update(&mut c, update)?;
             "UpdateZone"
+        }
+        Admin::Zone {
+            command: Zone::Remove { name },
+        } => {
+            c.name = name;
+            "RemoveZone"
         }
         Admin::User {
             command: User::Add { name, max_duration },

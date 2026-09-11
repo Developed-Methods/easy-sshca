@@ -58,6 +58,7 @@ service AdminService {
   rpc ImportZone(Command) returns (Reply);
   rpc ListZones(Command) returns (Reply);
   rpc UpdateZone(Command) returns (Reply);
+  rpc RemoveZone(Command) returns (Reply);
   rpc CreateUser(Command) returns (Reply);
   rpc ListUsers(Command) returns (Reply);
   rpc UpdateUser(Command) returns (Reply);
