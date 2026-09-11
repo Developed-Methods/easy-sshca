@@ -438,6 +438,12 @@ impl protocol::admin_service_server::AdminService for State {
     ) -> std::result::Result<Response<Reply>, Status> {
         self.rpc("UpdateZone", request).await
     }
+    async fn remove_zone(
+        &self,
+        request: Request<Command>,
+    ) -> std::result::Result<Response<Reply>, Status> {
+        self.rpc("RemoveZone", request).await
+    }
     async fn create_user(
         &self,
         request: Request<Command>,

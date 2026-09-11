@@ -264,6 +264,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         "ImportZone",
         "ListZones",
         "UpdateZone",
+        "RemoveZone",
         "CreateUser",
         "ListUsers",
         "ListUserZones",
@@ -315,6 +316,7 @@ async fn tls_locked_boundaries_http_restart_and_secret_logs() {
         "ImportZone",
         "ListZones",
         "UpdateZone",
+        "RemoveZone",
         "CreateUser",
         "ListUsers",
         "ListUserZones",
@@ -996,6 +998,11 @@ async fn cli_tables_hide_uuids_unless_verbose() {
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["result"]["resources"][0]["id"], *id);
+    assert_eq!(
+        human(&["admin", "zone", "remove", "production"]).trim(),
+        "OK"
+    );
+    assert_eq!(human(&["admin", "zone", "list"]).trim(), "No results.");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -262,6 +262,67 @@ fn admin_boundaries_grants_and_removal() {
             .unwrap();
     assert_eq!(grants, 0);
 }
+
+#[test]
+fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
+    let mut f = Fixture::new();
+    f.sign("").unwrap();
+
+    f.db.execute(
+        "RemoveZone",
+        &f.admin,
+        &Command {
+            name: "production".into(),
+            ..cmd()
+        },
+    )
+    .unwrap();
+
+    assert!(
+        f.db.execute("ListZones", &f.admin, &cmd())
+            .unwrap()
+            .resources
+            .is_empty()
+    );
+    assert_eq!(f.sign("").unwrap_err().code, Code::PermissionDenied);
+    assert_eq!(
+        f.db.execute(
+            "GetPublicKey",
+            "",
+            &Command {
+                zone: "production".into(),
+                ..cmd()
+            },
+        )
+        .unwrap_err()
+        .code,
+        Code::NotFound
+    );
+    assert_eq!(
+        f.db.execute(
+            "UpdateZone",
+            &f.admin,
+            &Command {
+                name: "production".into(),
+                active: Some(true),
+                ..cmd()
+            },
+        )
+        .unwrap_err()
+        .code,
+        Code::NotFound
+    );
+    let (grants, certificates, removals): (i64, i64, i64) = f
+        .db
+        .connection
+        .query_row(
+            "SELECT (SELECT count(*) FROM user_zones),(SELECT count(*) FROM issued_certificates),(SELECT count(*) FROM zone_removals)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((grants, certificates, removals), (0, 1, 1));
+}
 #[test]
 fn totp_enrollment_replay_and_admin_clear() {
     let mut f = Fixture::new();

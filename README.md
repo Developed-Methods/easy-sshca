@@ -256,6 +256,8 @@ Import creates a new zone and preserves the CA fingerprint. It never replaces an
 
 Each CA key can belong to only one zone, including inactive zones. Changing a key's comment does not create a new CA identity.
 
+Remove a zone and revoke all of its user grants with `easy-sshca --config ./my-ca/admin.yaml admin zone remove production`. Removal preserves certificate history and prevents the CA key from being imported again.
+
 Before importing, inventory every host that already trusts the CA. Treat those hosts as part of the zone's access scope. OpenSSH enforces CA trust and principals, not this application's zone names. Use a fresh CA key when hosts require separate access scopes.
 
 ### Metrics and audit retention
