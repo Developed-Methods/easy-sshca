@@ -8,74 +8,228 @@ Build and install on Linux with Rust, a C compiler, make, and Perl:
 cargo install --path . --locked
 ```
 
-Configure locked memory before running commands that load secrets. All commands except help and version require an unlimited memlock limit.
-For a shell, have your administrator configure an unlimited hard memlock limit, then run `ulimit -l unlimited`.
-For a systemd service, add this override:
+## For users
 
-```ini
-[Service]
-LimitMEMLOCK=infinity
-LimitCORE=0
+Your administrator sends you a client configuration file. It contains your access token, so treat it as a secret.
+
+### 1. Save the configuration
+
+Save the file as `~/.config/easy-sshca/config.yaml`:
+
+```sh
+mkdir -p -m 700 ~/.config/easy-sshca
+mv ~/alice.yaml ~/.config/easy-sshca/config.yaml
+chmod 600 ~/.config/easy-sshca/config.yaml
 ```
 
-Allow `mlockall` and `prctl` in container or service syscall policies. Configure containers with unlimited soft and hard memlock limits.
-The application refuses to load secrets when these protections fail.
+easy-sshca reads this path by default. It refuses to read the file if other users can read or write it.
 
-Initialize a new folder and start the server:
+Note: to keep the file somewhere else, pass `--config PATH` to every command.
+
+### 2. Generate an SSH key
+
+The CA signs Ed25519 keys only. If you already have an Ed25519 key, skip this step and use it.
+
+To make a new key:
+
+```sh
+easy-sshca gen-key
+```
+
+This writes the private key to `~/.ssh/id_ed25519` and the public key to `~/.ssh/id_ed25519.pub`.
+
+`gen-key` never overwrites. If either file exists, it stops with `key files already exist`.
+
+`ssh-keygen` works too, and it can protect the private key with a passphrase:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+```
+
+Note: a passphrase never reaches the CA. Signing reads the public key only.
+
+### 3. Point the configuration at your public key
+
+Add `public_key` under `defaults` in `~/.config/easy-sshca/config.yaml`:
+
+```yaml
+version: 1
+server: https://ca.example.com:9443
+api_key: esca_at_01a08de5-dfe3-70a9-8021-8d101078cbb5_...
+defaults:
+  zone: null
+  public_key: ~/.ssh/id_ed25519.pub
+  duration: 1h
+```
+
+Note: set `zone` to a zone name too, and you can run `easy-sshca sign` with no arguments.
+
+### 4. Enroll a TOTP authenticator
+
+Start the enrollment:
+
+```sh
+easy-sshca totp enroll
+```
+
+The command prints a QR code and the secret in text form. Scan the QR code with your authenticator app. Enter the six-digit code at the prompt to confirm.
+
+After enrollment, every signing request asks for a code.
+
+### 5. Sign your key
+
+Request a certificate from the `production` zone:
+
+```sh
+easy-sshca sign production
+```
+
+Enter the TOTP code at the prompt. The command writes the certificate to `~/.ssh/id_ed25519-cert.pub`.
+
+Now log in. OpenSSH sends the certificate with the key automatically:
+
+```sh
+ssh alice@host.example.com
+```
+
+The certificate expires after the duration in your configuration. Run `sign --force` to replace it.
+
+## For server operators
+
+### 1. Initialize the instance on your local machine
 
 ```sh
 easy-sshca server init --name "My SSH CA" --folder ./my-ca
-easy-sshca server start --config ./my-ca/server.yaml
 ```
 
-In another terminal, unlock it:
+This creates three files in `./my-ca`:
+
+- `ca.db`, the encrypted database
+- `server.yaml`, the server configuration
+- `admin.yaml`, your admin credential and the bootstrap secret
+
+Keep `admin.yaml` on your local machine. Never copy it to the server.
+
+### 2. Prepare the server configuration
+
+Edit `./my-ca/server.yaml` for the real host. Set the database path and bind the listeners to all interfaces. Leave the `tls` block exactly as `server init` wrote it:
+
+```yaml
+version: 1
+database: /var/lib/easy-sshca/ca.db
+rpc_listen: 0.0.0.0:9443
+https_listen: 0.0.0.0:9444
+tls:
+  certificate_pem: |
+    -----BEGIN CERTIFICATE-----
+    ...                                # leave as generated
+  private_key_pem: |
+    -----BEGIN PRIVATE KEY-----
+    ...                                # leave as generated
+limits:
+  request_bytes: 65536
+  rpc_timeout: 10s
+  database_queue: 128
+```
+
+### 3. Copy the database and configuration to the server
+
+The database is encrypted with the bootstrap secret, which stays on your local machine:
+
+```sh
+ssh root@ca.example.com 'mkdir -p -m 700 /var/lib/easy-sshca /etc/easy-sshca'
+scp ./my-ca/ca.db root@ca.example.com:/var/lib/easy-sshca/ca.db
+scp ./my-ca/server.yaml root@ca.example.com:/etc/easy-sshca/server.yaml
+```
+
+Start the server on the host:
+
+```sh
+easy-sshca server start --config /etc/easy-sshca/server.yaml
+```
+
+The server starts locked. Every operation except `unlock` fails, and `/health/ready` reports `locked`.
+
+### 4. Point the admin configuration at the server
+
+Edit `./my-ca/admin.yaml` and change `server` to your CA address. Leave `tls_ca_pem` in place; it is how the client trusts the server certificate:
+
+```yaml
+version: 1
+server: https://ca.example.com:9443
+api_key: esca_ad_01a08de5-b018-7398-8cda-6c5d3fb62caf_...
+bootstrap_secret: QVYcKDvuJZhYW3j8dt9vPxA6GRglTeXujc9iLowfu8o
+tls_ca_pem: |
+  -----BEGIN CERTIFICATE-----
+  ...                                  # leave as generated
+defaults:
+  zone: null
+  public_key: null
+  duration: null
+```
+
+CAUTION: the init certificate covers `localhost`, `127.0.0.1`, and `::1` only. Connecting by any other name fails with `certificate not valid for name`.
+
+To reach the CA by hostname, reissue `tls.certificate_pem` and `tls.private_key_pem` for that name, then copy the new certificate into `tls_ca_pem`. Otherwise forward the port and keep `server: https://localhost:9443`:
+
+```sh
+ssh -L 9443:localhost:9443 ca.example.com
+```
+
+### 5. Unlock the server
 
 ```sh
 easy-sshca --config ./my-ca/admin.yaml server unlock
 ```
 
-Repeat the unlock after each server restart. Keep `admin.yaml` private because it contains the admin key and bootstrap secret.
-The generated server listens on localhost, using port `9443` for gRPC and `9444` for HTTPS.
-For remote access, specify the advertised address and listener addresses:
+The command sends the bootstrap secret from `admin.yaml`. The server derives the database key and holds it in memory only.
+
+CAUTION: repeat this step after every server restart. A restarted server stays locked and signs nothing until you unlock it.
+
+### 6. Create the first zone
+
+A zone owns one CA key. Create one called `production`:
 
 ```sh
-easy-sshca server init --name "My SSH CA" --folder ./my-ca \
-  --server ca.example.com --port 9443 \
-  --rpc-listen 0.0.0.0:9443 --https-listen 0.0.0.0:9444
+easy-sshca --config ./my-ca/admin.yaml admin zone add production --max-duration 1d
 ```
 
-`--server` accepts a hostname, IP address, or HTTPS origin, with an optional port. Use brackets around IPv6 addresses.
-`--port` overrides the address port. If neither supplies a port, initialization uses `9443`.
-The default gRPC listener uses the advertised port. An explicit `--rpc-listen` can select a different port for proxies or forwarding.
-
-`server.yaml` stores the advertised address in `server` and the bind addresses in `rpc_listen` and `https_listen`.
-New admin configs and access-token exports use the advertised address. Token exports obtain it from the running server.
-To change it, edit `server` in `server.yaml`, then restart and unlock the server. Update existing client configs separately.
-Older server configs without `server` default to `https://localhost:9443`; set this field before exporting remote client configs.
-
-Clients with `tls_ca` or `tls_ca_pem` verify certificate trust, validity, and handshake signatures without checking the hostname.
-Changing the advertised address does not require replacing the generated TLS certificate.
-Clients without a configured TLS CA use system trust and normal hostname verification. HTTPS browsers also use normal certificate verification.
-
-Configuration values can use inline content or external files:
-
-- Client and admin configs accept `api_key` or `api_key_file`.
-- Admin configs accept `bootstrap_secret` or `bootstrap_secret_file`.
-- Client and admin configs accept `tls_ca_pem` or `tls_ca`.
-- Server configs accept `tls.certificate_pem` or `tls.certificate`.
-- Server configs accept `tls.private_key_pem` or `tls.private_key`.
-
-Do not configure both forms of the same value.
-
-Create a zone and user, grant access, and save a portable client configuration:
+Print the zone's CA public key:
 
 ```sh
-easy-sshca --config ./my-ca/admin.yaml admin zone add production
-easy-sshca --config ./my-ca/admin.yaml admin user add alice
+easy-sshca --config ./my-ca/admin.yaml pub-key production
+```
+
+Install that key on every SSH host and point `TrustedUserCAKeys` at it. See [TrustedUserCAKeys and AuthorizedPrincipalsFile](https://man.openbsd.org/sshd_config#TrustedUserCAKeys). Hosts can also fetch it from `https://ca.example.com:9444/zones/production/ca.pub`.
+
+### 7. Create the first user and access token
+
+Add the user, grant zone access, and export a client configuration:
+
+```sh
+easy-sshca --config ./my-ca/admin.yaml admin user add alice --max-duration 1d
 easy-sshca --config ./my-ca/admin.yaml admin user zone grant alice production
 easy-sshca --config ./my-ca/admin.yaml admin access-token add \
   --user alice --name laptop --max-duration 1h -o alice.yaml
 ```
+
+`alice.yaml` holds the server address, the access token, and the TLS trust certificate. Use a `.json` filename to export JSON instead.
+
+The username becomes the certificate principal. Each SSH host needs an account named `alice`.
+
+### 8. Deliver the configuration
+
+WARNING: never send `alice.yaml` in plain text. Anyone who reads the file can request certificates as that user.
+
+Encrypt the file before you send it, or use a secret manager. For example, with `age`:
+
+```sh
+age -R alice_age.pub -o alice.yaml.age alice.yaml
+```
+
+Delete your copy after delivery. To revoke a leaked token, run `admin access-token remove --user alice --name laptop`.
+
+## Importing an existing CA
 
 To reuse an existing Ed25519 SSH CA, import its unencrypted OpenSSH private key instead of running `zone add`:
 
@@ -86,67 +240,8 @@ easy-sshca --config ./my-ca/admin.yaml admin zone import production --stdin < ./
 ```
 
 Import creates a new zone and preserves the CA fingerprint. It never replaces an existing zone.
+
 Each CA key can belong to only one zone, including inactive zones. Changing a key's comment does not create a new CA identity.
 
-Before importing, inventory every host that already trusts the CA. Treat those hosts as part of the zone's access scope.
-Certificates contain the authenticated username as their principal. OpenSSH enforces CA trust and principals, not this application's zone names.
-See [TrustedUserCAKeys and AuthorizedPrincipalsFile](https://man.openbsd.org/sshd_config#TrustedUserCAKeys).
-Use a fresh CA key when hosts require separate access scopes.
+Before importing, inventory every host that already trusts the CA. Treat those hosts as part of the zone's access scope. OpenSSH enforces CA trust and principals, not this application's zone names. Use a fresh CA key when hosts require separate access scopes.
 
-Before upgrading an existing deployment, run `--json admin zone list` with the current version and compare every zone's fingerprint.
-Include inactive zones and follow all pagination tokens. Resolve repeated fingerprints before deployment.
-Replace shared CAs with distinct keys and update host trust and user grants for each intended scope.
-The application cannot replace a zone's CA; create replacement zones with fresh keys.
-Remove shared CA trust from affected hosts; disabling a zone does not invalidate certificates already issued.
-
-On unlock, the server checks existing CA identities and transactionally adds unique public-key and fingerprint indexes.
-Duplicate CAs stop unlock with `DUPLICATE_CA`, identifying the conflicting zones and fingerprint. The database remains unchanged.
-Inactive duplicates also require repair; disabling them cannot restore isolation.
-Back up the encrypted database before offline repair of legacy duplicate zones.
-Preserve issuance and audit records when repairing zone identities and coordinating host trust changes.
-
-Give `alice.yaml` to the user securely. It includes the access token and TLS trust certificate.
-Use a `.json` filename to export JSON instead.
-
-As the user, generate an SSH key and request a certificate:
-
-```sh
-easy-sshca gen-key --file ./alice_ed25519
-easy-sshca --config alice.yaml sign production --file ./alice_ed25519.pub
-```
-
-SSH hosts must trust the zone's CA through `TrustedUserCAKeys` and have an account matching the username.
-Use `--help` on any command for more options.
-
-## Secret memory and host storage
-
-On Linux, startup disables process dumpability and verifies it before creating runtime threads or loading secrets.
-It also checks that setting the core-file limit to zero succeeds.
-Dumpability prevents kernel dumps sent to collectors, where `RLIMIT_CORE` alone does not apply.
-See [Linux core dumps](https://www.man7.org/linux/man-pages/man5/core.5.html).
-
-The application locks current and future process mappings, including Rust CA keys, parsing buffers, and signing stacks.
-Pages become locked when accessed. This protection is independent of SQLCipher's memory controls.
-The bundled SQLCipher build disables per-buffer locking, whose unlock calls could otherwise unlock shared heap pages.
-SQLCipher memory wiping remains enabled. Build from the repository root to apply the required `.cargo/config.toml` settings.
-An unlimited memlock limit prevents later allocations from exhausting a finite locking allowance.
-Locked memory consumes physical RAM; size the host for the process workload.
-See [Linux memory locking](https://www.man7.org/linux/man-pages/man2/mlockall.2.html).
-
-Disable crash collection for the service in your host's collector configuration, including privileged diagnostic agents.
-Encrypt or disable all swap storage. Disable hibernation or encrypt its image storage.
-Memory locking does not prevent hibernation images, kernel crash dumps, or privileged host tools from capturing secrets.
-Apply these requirements to hosts running administrative commands too, especially CA imports.
-Review existing crash dumps, swap, and hibernation images under your secret-retention policy; these changes cannot remove earlier copies.
-
-Library callers must call `memory::protect()` before reading secrets or starting secret-handling threads.
-Database, server, and signing entry points also enforce protection before their own secret processing.
-After protection, do not fork, change process credentials, or call memory-unlocking functions.
-These operations can invalidate process protections.
-
-Tests require the same unlimited memlock limit. With administrative access, run:
-
-```sh
-sudo prlimit --pid $$ --memlock=unlimited:unlimited
-cargo test --locked
-```
