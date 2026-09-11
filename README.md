@@ -119,6 +119,7 @@ version: 1
 database: /var/lib/easy-sshca/ca.db
 rpc_listen: 0.0.0.0:9443
 https_listen: 0.0.0.0:9444
+metrics_listen: 127.0.0.1:9445          # optional; loopback addresses only
 tls:
   certificate_pem: |
     -----BEGIN CERTIFICATE-----
@@ -257,3 +258,15 @@ Each CA key can belong to only one zone, including inactive zones. Changing a ke
 
 Before importing, inventory every host that already trusts the CA. Treat those hosts as part of the zone's access scope. OpenSSH enforces CA trust and principals, not this application's zone names. Use a fresh CA key when hosts require separate access scopes.
 
+### Metrics and audit retention
+
+Metrics are disabled unless `metrics_listen` is configured. Scrape `http://127.0.0.1:9445/metrics` locally when using the example configuration.
+The public HTTPS listener does not serve `/metrics`.
+
+The encrypted database retains the newest 10,000 audit events in insertion order.
+Older events are deleted after each audit write and when the database opens.
+Malformed credentials produce `MALFORMED_CREDENTIAL` events with empty actor fields.
+Export audit events before eviction if you need longer retention.
+
+Rate limits group IPv6 sources by /64. IPv4-mapped addresses share limits with their IPv4 equivalents.
+When the 10,000-bucket table fills, new buckets replace the oldest buckets.

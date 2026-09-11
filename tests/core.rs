@@ -870,6 +870,7 @@ fn configs_accept_inline_and_external_secret_sources() {
         database: "ca.db".into(),
         rpc_listen: "127.0.0.1:9443".parse().unwrap(),
         https_listen: "127.0.0.1:9444".parse().unwrap(),
+        metrics_listen: None,
         tls: config::Tls {
             certificate: None,
             certificate_pem: Some(tls.cert.pem()),
@@ -1170,4 +1171,59 @@ fn tls_server_name_config_validation_and_round_trip() {
         config.tls_server_name = Some(name.into());
         assert!(config.validate().is_err());
     }
+}
+
+#[test]
+fn failed_auth_is_audited_and_oldest_events_are_evicted() {
+    let mut f = Fixture::new();
+    f.db.connection
+        .execute("DELETE FROM audit_events", [])
+        .unwrap();
+    f.db.connection.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO audit_events SELECT CAST(x AS TEXT),'','','seed','OK',CAST(x AS TEXT),0 FROM n", []).unwrap();
+    let malformed = cmd();
+    assert!(f.db.execute("ListZones", "not-a-key", &malformed).is_err());
+    let row: (String, String, String) =
+        f.db.connection
+            .query_row(
+                "SELECT actor_type,actor_id,result FROM audit_events WHERE request_id=?1",
+                [&malformed.request_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(
+        row,
+        (String::new(), String::new(), "MALFORMED_CREDENTIAL".into())
+    );
+    let invalid = auth::new_key("ad");
+    for _ in 0..50 {
+        assert!(f.db.execute("ListZones", &invalid, &cmd()).is_err());
+    }
+    let count: i64 =
+        f.db.connection
+            .query_row("SELECT count(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(count, 10000);
+    let oldest: String =
+        f.db.connection
+            .query_row(
+                "SELECT id FROM audit_events ORDER BY rowid LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(oldest, "52");
+    f.db.connection
+        .execute(
+            "INSERT INTO audit_events VALUES('extra','','','seed','OK','extra',0)",
+            [],
+        )
+        .unwrap();
+    let path = f.dir.path().join("ca.db");
+    drop(f.db);
+    let db = Database::open(&path, &f.secret).unwrap();
+    let count: i64 = db
+        .connection
+        .query_row("SELECT count(*) FROM audit_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 10000);
 }

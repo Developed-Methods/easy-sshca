@@ -705,6 +705,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     server: server_address.clone(),
                     rpc_listen,
                     https_listen,
+                    metrics_listen: None,
                     tls: config::Tls {
                         certificate: None,
                         certificate_pem: Some(tls.cert.pem()),

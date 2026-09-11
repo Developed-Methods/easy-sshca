@@ -12,6 +12,10 @@ pub fn router(state: ServerState) -> Router {
         .route("/health/live", get(|| async { "live\n" }))
         .route("/health/ready", get(ready))
         .route("/zones/{name}/ca.pub", get(public))
+        .with_state(state)
+}
+pub fn metrics_router(state: ServerState) -> Router {
+    Router::new()
         .route("/metrics", get(metrics))
         .with_state(state)
 }

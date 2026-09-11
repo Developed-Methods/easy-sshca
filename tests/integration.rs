@@ -28,6 +28,7 @@ struct Server {
     client: ClientConfig,
     secret: String,
     https: String,
+    metrics: String,
 }
 impl Server {
     async fn new() -> Self {
@@ -52,7 +53,8 @@ impl Server {
         config::exclusive(&key, key_pair.serialize_pem().as_bytes(), 0o600).unwrap();
         let rpc = port();
         let https = port();
-        config::exclusive(&dir.path().join("server.yaml"),format!("version: 1\nserver: https://127.0.0.1:{rpc}\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display()).as_bytes(), 0o600).unwrap();
+        let metrics = port();
+        config::exclusive(&dir.path().join("server.yaml"),format!("version: 1\nserver: https://127.0.0.1:{rpc}\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\nmetrics_listen: 127.0.0.1:{metrics}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display()).as_bytes(), 0o600).unwrap();
         let process = Self::spawn(dir.path());
         let trust_path = dir.path().join("trust.pem");
         config::exclusive(&trust_path, trust.as_bytes(), 0o600).unwrap();
@@ -73,6 +75,7 @@ impl Server {
             },
             secret,
             https: format!("https://localhost:{https}"),
+            metrics: format!("http://127.0.0.1:{metrics}"),
         };
         s.wait().await;
         s
@@ -202,6 +205,36 @@ fn status(e: &anyhow::Error) -> tonic::Code {
 async fn tls_locked_boundaries_http_restart_and_secret_logs() {
     let mut s = Server::new().await;
     let http = s.http();
+    assert_eq!(
+        http.get(format!("{}/metrics", s.https))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    let metrics = http
+        .get(format!("{}/metrics", s.metrics))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    assert!(
+        metrics
+            .text()
+            .await
+            .unwrap()
+            .contains("easy_sshca_issued_certificates_total")
+    );
+    assert_eq!(
+        http.get(format!("{}/zones/production/ca.pub", s.metrics))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+
     assert_eq!(
         http.get(format!("{}/health/live", s.https))
             .send()
