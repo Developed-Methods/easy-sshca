@@ -36,8 +36,10 @@ pub fn sign(
     duration: u64,
 ) -> Result<String> {
     let key = PublicKey::from_openssh(public)?;
-    if key.algorithm() != Algorithm::Ed25519 {
-        return Err(Error::input("only Ed25519 public keys are supported"));
+    if !matches!(key.algorithm(), Algorithm::Ed25519 | Algorithm::Rsa { .. }) {
+        return Err(Error::input(
+            "only Ed25519 and RSA public keys are supported",
+        ));
     }
     let mut builder = Builder::new_with_random_nonce(
         &mut OsRng,

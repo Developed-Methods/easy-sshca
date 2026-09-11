@@ -469,6 +469,74 @@ fn run_cli(path: &std::path::Path, args: &[&str], input: Option<&str>) -> std::p
     child.wait_with_output().unwrap()
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_signs_configured_rsa_key_and_allows_override() {
+    let s = Server::new().await;
+    s.unlock().await;
+    let mut user = s.user().await;
+    user.defaults.zone = Some("production".into());
+    user.defaults.public_key = Some("custom_rsa.pub".into());
+    let path = s.dir.path().join("client.yaml");
+    config::exclusive(&path, user.serialize_for(&path).unwrap().as_bytes(), 0o600).unwrap();
+    let generated = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "rsa", "-b", "2048", "-N", "", "-f"])
+        .arg(s.dir.path().join("custom_rsa"))
+        .output()
+        .unwrap();
+    assert!(generated.status.success());
+    let signed = run_cli(&path, &["sign"], None);
+    assert!(
+        signed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&signed.stderr)
+    );
+    let cert_path = s.dir.path().join("custom_rsa-cert.pub");
+    let cert =
+        ssh_key::Certificate::from_openssh(&std::fs::read_to_string(&cert_path).unwrap()).unwrap();
+    let public =
+        ssh_key::PublicKey::read_openssh_file(&s.dir.path().join("custom_rsa.pub")).unwrap();
+    assert_eq!(cert.public_key(), public.key_data());
+    assert_eq!(cert.valid_principals(), ["alice"]);
+    let ca = cli::rpc(
+        &user,
+        "GetPublicKey",
+        Command {
+            zone: "production".into(),
+            ..cmd()
+        },
+    )
+    .await
+    .unwrap();
+    let ca = ssh_key::PublicKey::from_openssh(&ca.public_key).unwrap();
+    cert.validate([&ca.fingerprint(ssh_key::HashAlg::Sha256)])
+        .unwrap();
+    let inspected = std::process::Command::new("ssh-keygen")
+        .arg("-Lf")
+        .arg(&cert_path)
+        .output()
+        .unwrap();
+    assert!(inspected.status.success());
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("ssh-rsa-cert-v01@openssh.com"));
+
+    let other = s.dir.path().join("other.pub");
+    std::fs::write(
+        &other,
+        easy_sshca::signing::generate("override")
+            .unwrap()
+            .public_key()
+            .to_openssh()
+            .unwrap(),
+    )
+    .unwrap();
+    let overridden = run_cli(&path, &["sign", "--file", other.to_str().unwrap()], None);
+    assert!(
+        overridden.status.success(),
+        "{}",
+        String::from_utf8_lossy(&overridden.stderr)
+    );
+    assert!(s.dir.path().join("other-cert.pub").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_configuration_signing_rotation_and_recovery() {
     let s = Server::new().await;
     s.unlock().await;

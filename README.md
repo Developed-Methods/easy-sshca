@@ -54,5 +54,19 @@ easy-sshca gen-key --file ./alice_ed25519
 easy-sshca --config alice.yaml sign production --file ./alice_ed25519.pub
 ```
 
+To use an existing RSA key, add its public key path to the client configuration:
+
+```yaml
+defaults:
+  public_key: ~/.ssh/id_rsa.pub
+```
+
+Then request a certificate with `easy-sshca --config alice.yaml sign production`.
+The certificate is saved beside the key as `id_rsa-cert.pub`. The private key stays on your machine.
+Relative paths are resolved from the configuration directory. Paths starting with `~/` are resolved from your home directory.
+The setting is optional; without it, the client searches `~/.ssh` for a single public key.
+Use `sign --file PATH` to override the configured path for one request.
+You can also save this setting when creating a configuration with `configure --public-key ~/.ssh/id_rsa.pub`.
+
 SSH hosts must trust the zone's CA through `TrustedUserCAKeys` and have an account matching the username.
 Use `--help` on any command for more options.
