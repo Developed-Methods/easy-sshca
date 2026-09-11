@@ -184,7 +184,7 @@ fn printed_command_starts_server_and_generated_client_can_unlock() {
 #[test]
 fn supplied_admin_key_is_copied_into_the_instance() {
     let temp = tempfile::tempdir().unwrap();
-    let key = easy_sshca::auth::new_key("ad");
+    let key = easy_sshca::auth::new_key(easy_sshca::auth::KeyKind::Admin);
     let source = temp.path().join("admin-key");
     easy_sshca::config::exclusive(&source, key.as_bytes(), 0o600).unwrap();
     let folder = temp.path().join("instance");

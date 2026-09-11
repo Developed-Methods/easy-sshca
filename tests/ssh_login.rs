@@ -1,3 +1,4 @@
+use easy_sshca::protocol::Operation;
 use easy_sshca::{auth, config, protocol::Command, signing, storage::Database};
 use std::{
     process::{Command as Process, Stdio},
@@ -5,7 +6,7 @@ use std::{
 };
 fn request() -> Command {
     Command {
-        request_id: auth::id(),
+        request_id: auth::new_id(),
         ..Default::default()
     }
 }
@@ -43,12 +44,12 @@ fn certificate_login_and_expiry() {
     )
     .unwrap();
     let secret = auth::random_secret();
-    let admin = auth::new_key("ad");
+    let admin = auth::new_key(auth::KeyKind::Admin);
     let dbpath = root.join("ca.db");
     Database::initialize(&dbpath, &secret, &admin, "SSH login test").unwrap();
     let mut db = Database::open(&dbpath, &secret).unwrap();
     db.execute(
-        "CreateZone",
+        Operation::CreateZone,
         &admin,
         &Command {
             name: "test".into(),
@@ -58,7 +59,7 @@ fn certificate_login_and_expiry() {
     )
     .unwrap();
     db.execute(
-        "CreateUser",
+        Operation::CreateUser,
         &admin,
         &Command {
             name: username.clone(),
@@ -68,7 +69,7 @@ fn certificate_login_and_expiry() {
     )
     .unwrap();
     db.execute(
-        "GrantZone",
+        Operation::GrantZone,
         &admin,
         &Command {
             user: username.clone(),
@@ -79,7 +80,7 @@ fn certificate_login_and_expiry() {
     .unwrap();
     let token = db
         .execute(
-            "CreateAccessToken",
+            Operation::CreateAccessToken,
             &admin,
             &Command {
                 user: username.clone(),
@@ -92,7 +93,7 @@ fn certificate_login_and_expiry() {
         .api_key;
     let ca = db
         .execute(
-            "GetPublicKey",
+            Operation::GetPublicKey,
             "",
             &Command {
                 zone: "test".into(),
@@ -103,7 +104,7 @@ fn certificate_login_and_expiry() {
     std::fs::write(root.join("ca.pub"), ca.public_key).unwrap();
     let signed = db
         .execute(
-            "SignCertificate",
+            Operation::SignCertificate,
             &token,
             &Command {
                 zone: "test".into(),

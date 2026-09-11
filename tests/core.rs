@@ -1,9 +1,10 @@
+use easy_sshca::protocol::Operation;
 use easy_sshca::{auth, config, protocol::Command, signing, storage::Database};
 use std::os::unix::fs::PermissionsExt;
 use tonic::Code;
 fn cmd() -> Command {
     Command {
-        request_id: auth::id(),
+        request_id: auth::new_id(),
         ..Default::default()
     }
 }
@@ -19,11 +20,11 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ca.db");
         let secret = auth::random_secret().to_string();
-        let admin = auth::new_key("ad").to_string();
+        let admin = auth::new_key(auth::KeyKind::Admin).to_string();
         Database::initialize(&path, &secret, &admin, "Example SSH CA").unwrap();
         let mut db = Database::open(&path, &secret).unwrap();
         db.execute(
-            "CreateZone",
+            Operation::CreateZone,
             &admin,
             &Command {
                 name: "production".into(),
@@ -33,7 +34,7 @@ impl Fixture {
         )
         .unwrap();
         db.execute(
-            "CreateUser",
+            Operation::CreateUser,
             &admin,
             &Command {
                 name: "alice".into(),
@@ -43,7 +44,7 @@ impl Fixture {
         )
         .unwrap();
         db.execute(
-            "GrantZone",
+            Operation::GrantZone,
             &admin,
             &Command {
                 user: "alice".into(),
@@ -54,7 +55,7 @@ impl Fixture {
         .unwrap();
         let token = db
             .execute(
-                "CreateAccessToken",
+                Operation::CreateAccessToken,
                 &admin,
                 &Command {
                     user: "alice".into(),
@@ -76,7 +77,7 @@ impl Fixture {
     fn sign(&mut self, code: &str) -> easy_sshca::error::Result<easy_sshca::protocol::Reply> {
         let key = signing::generate("test").unwrap();
         self.db.execute(
-            "SignCertificate",
+            Operation::SignCertificate,
             &self.token,
             &Command {
                 zone: "production".into(),
@@ -97,11 +98,14 @@ fn durations_names_credentials_and_redaction() {
         assert!(auth::parse_duration(input).is_err());
     }
     for input in ["", "../etc/passwd", "üser", "a b"] {
-        assert!(auth::name(input).is_err());
+        assert!(auth::validate_name(input).is_err());
     }
-    let key = auth::new_key("at");
-    assert_eq!(auth::key(&key).unwrap().kind, "at");
-    assert!(auth::key("esca_at_bad").is_err());
+    let key = auth::new_key(auth::KeyKind::AccessToken);
+    assert_eq!(
+        auth::parse_key(&key).unwrap().kind,
+        auth::KeyKind::AccessToken
+    );
+    assert!(auth::parse_key("esca_at_bad").is_err());
     assert!(
         !format!(
             "{:?}",
@@ -119,12 +123,12 @@ fn rfc_totp_window_zero_padding_and_replay() {
         base32::Alphabet::Rfc4648 { padding: false },
         b"12345678901234567890",
     );
-    assert_eq!(auth::totp_step(&secret, "287082", -1, 59).unwrap(), 1);
-    assert!(auth::totp_step(&secret, "287082", 1, 59).is_err());
-    assert_eq!(auth::totp_step(&secret, "287082", -1, 89).unwrap(), 1);
-    assert!(auth::totp_step(&secret, "287082", -1, 90).is_err());
+    assert_eq!(auth::verify_totp(&secret, "287082", -1, 59).unwrap(), 1);
+    assert!(auth::verify_totp(&secret, "287082", 1, 59).is_err());
+    assert_eq!(auth::verify_totp(&secret, "287082", -1, 89).unwrap(), 1);
+    assert!(auth::verify_totp(&secret, "287082", -1, 90).is_err());
     assert_eq!(
-        auth::totp_step(&secret, "005924", -1, 1234567890).unwrap(),
+        auth::verify_totp(&secret, "005924", -1, 1234567890).unwrap(),
         41152263
     );
 }
@@ -133,7 +137,7 @@ fn encrypted_restore_wrong_key_and_exclusive_init() {
     let mut f = Fixture::new();
     let key =
         f.db.execute(
-            "GetPublicKey",
+            Operation::GetPublicKey,
             "",
             &Command {
                 zone: "production".into(),
@@ -156,7 +160,7 @@ fn encrypted_restore_wrong_key_and_exclusive_init() {
     let mut db = Database::open(&backup, &f.secret).unwrap();
     assert_eq!(
         db.execute(
-            "GetPublicKey",
+            Operation::GetPublicKey,
             "",
             &Command {
                 zone: "production".into(),
@@ -168,12 +172,15 @@ fn encrypted_restore_wrong_key_and_exclusive_init() {
         key.fingerprint
     );
     assert_eq!(
-        db.execute("ListUsers", &f.admin, &cmd()).unwrap().resources[0].name,
+        db.execute(Operation::ListUsers, &f.admin, &cmd())
+            .unwrap()
+            .resources[0]
+            .name,
         "alice"
     );
     let user_key = signing::generate("restored").unwrap();
     db.execute(
-        "SignCertificate",
+        Operation::SignCertificate,
         &f.token,
         &Command {
             zone: "production".into(),
@@ -213,19 +220,19 @@ fn certificates_are_owned_clamped_and_openssh_compatible() {
 fn admin_boundaries_grants_and_removal() {
     let mut f = Fixture::new();
     assert_eq!(
-        f.db.execute("ListUsers", &f.token, &cmd())
+        f.db.execute(Operation::ListUsers, &f.token, &cmd())
             .unwrap_err()
             .code,
         Code::PermissionDenied
     );
     assert_eq!(
-        f.db.execute("BeginTotpEnrollment", &f.admin, &cmd())
+        f.db.execute(Operation::BeginTotpEnrollment, &f.admin, &cmd())
             .unwrap_err()
             .code,
         Code::PermissionDenied
     );
     f.db.execute(
-        "RevokeZone",
+        Operation::RevokeZone,
         &f.admin,
         &Command {
             user: "alice".into(),
@@ -236,7 +243,7 @@ fn admin_boundaries_grants_and_removal() {
     .unwrap();
     assert_eq!(f.sign("").unwrap_err().code, Code::PermissionDenied);
     f.db.execute(
-        "GrantZone",
+        Operation::GrantZone,
         &f.admin,
         &Command {
             user: "alice".into(),
@@ -247,7 +254,7 @@ fn admin_boundaries_grants_and_removal() {
     .unwrap();
     assert!(f.sign("").is_ok());
     f.db.execute(
-        "RemoveUser",
+        Operation::RemoveUser,
         &f.admin,
         &Command {
             name: "alice".into(),
@@ -257,7 +264,7 @@ fn admin_boundaries_grants_and_removal() {
     .unwrap();
     assert_eq!(f.sign("").unwrap_err().code, Code::Unauthenticated);
     let grants: i64 =
-        f.db.connection
+        f.db.connection()
             .query_row("SELECT count(*) FROM user_zones", [], |r| r.get(0))
             .unwrap();
     assert_eq!(grants, 0);
@@ -269,7 +276,7 @@ fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
     f.sign("").unwrap();
 
     f.db.execute(
-        "RemoveZone",
+        Operation::RemoveZone,
         &f.admin,
         &Command {
             name: "production".into(),
@@ -279,7 +286,7 @@ fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
     .unwrap();
 
     assert!(
-        f.db.execute("ListZones", &f.admin, &cmd())
+        f.db.execute(Operation::ListZones, &f.admin, &cmd())
             .unwrap()
             .resources
             .is_empty()
@@ -287,7 +294,7 @@ fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
     assert_eq!(f.sign("").unwrap_err().code, Code::PermissionDenied);
     assert_eq!(
         f.db.execute(
-            "GetPublicKey",
+            Operation::GetPublicKey,
             "",
             &Command {
                 zone: "production".into(),
@@ -300,7 +307,7 @@ fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
     );
     assert_eq!(
         f.db.execute(
-            "UpdateZone",
+            Operation::UpdateZone,
             &f.admin,
             &Command {
                 name: "production".into(),
@@ -314,7 +321,7 @@ fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
     );
     let (grants, certificates, removals): (i64, i64, i64) = f
         .db
-        .connection
+        .connection()
         .query_row(
             "SELECT (SELECT count(*) FROM user_zones),(SELECT count(*) FROM issued_certificates),(SELECT count(*) FROM zone_removals)",
             [],
@@ -327,7 +334,7 @@ fn removing_a_zone_revokes_access_and_preserves_certificate_history() {
 fn totp_enrollment_replay_and_admin_clear() {
     let mut f = Fixture::new();
     let enrollment =
-        f.db.execute("BeginTotpEnrollment", &f.token, &cmd())
+        f.db.execute(Operation::BeginTotpEnrollment, &f.token, &cmd())
             .unwrap();
     assert!(enrollment.otpauth_uri.contains("issuer=Example+SSH+CA"));
     let bytes = base32::decode(
@@ -338,7 +345,7 @@ fn totp_enrollment_replay_and_admin_clear() {
     let now = auth::now();
     let code = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, &bytes, now);
     f.db.execute(
-        "ConfirmTotpEnrollment",
+        Operation::ConfirmTotpEnrollment,
         &f.token,
         &Command {
             totp: code.clone(),
@@ -352,11 +359,11 @@ fn totp_enrollment_replay_and_admin_clear() {
     assert!(f.sign(&next).is_ok());
     assert!(f.sign(&next).is_err());
     assert!(
-        f.db.execute("BeginTotpEnrollment", &f.token, &cmd())
+        f.db.execute(Operation::BeginTotpEnrollment, &f.token, &cmd())
             .is_err()
     );
     f.db.execute(
-        "ClearTotp",
+        Operation::ClearTotp,
         &f.admin,
         &Command {
             user: "alice".into(),
@@ -369,20 +376,22 @@ fn totp_enrollment_replay_and_admin_clear() {
 #[test]
 fn token_rotation_retries_do_not_store_plaintext() {
     let mut f = Fixture::new();
-    let replacement = auth::new_key("at");
+    let replacement = auth::new_key(auth::KeyKind::AccessToken);
     let request = Command {
         replacement_key: replacement.to_string(),
         ..cmd()
     };
-    let first = f.db.execute("RotateToken", &f.token, &request).unwrap();
+    let first =
+        f.db.execute(Operation::RotateToken, &f.token, &request)
+            .unwrap();
     assert_eq!(
-        f.db.execute("RotateToken", &f.token, &request)
+        f.db.execute(Operation::RotateToken, &f.token, &request)
             .unwrap()
             .request_id,
         first.request_id
     );
     assert_eq!(
-        f.db.execute("RotateToken", &replacement, &request)
+        f.db.execute(Operation::RotateToken, &replacement, &request)
             .unwrap()
             .request_id,
         first.request_id
@@ -391,7 +400,7 @@ fn token_rotation_retries_do_not_store_plaintext() {
     f.token = replacement.to_string();
     assert!(f.sign("").is_ok());
     let response: Vec<u8> =
-        f.db.connection
+        f.db.connection()
             .query_row(
                 "SELECT response FROM idempotency_records WHERE request_id=?1",
                 [request.request_id],
@@ -413,28 +422,30 @@ fn idempotency_conflicts_secret_replays_and_failed_sign_rollback() {
         zone: "production".into(),
         ..cmd()
     };
-    let first = f.db.execute("SignCertificate", &f.token, &request).unwrap();
+    let first =
+        f.db.execute(Operation::SignCertificate, &f.token, &request)
+            .unwrap();
     assert_eq!(
-        f.db.execute("SignCertificate", &f.token, &request)
+        f.db.execute(Operation::SignCertificate, &f.token, &request)
             .unwrap()
             .certificate,
         first.certificate
     );
     request.duration = 30;
     assert_eq!(
-        f.db.execute("SignCertificate", &f.token, &request)
+        f.db.execute(Operation::SignCertificate, &f.token, &request)
             .unwrap_err()
             .reason,
         "REQUEST_CONFLICT"
     );
     let serial: i64 =
-        f.db.connection
+        f.db.connection()
             .query_row("SELECT next_serial FROM zones", [], |r| r.get(0))
             .unwrap();
     assert_eq!(serial, 2);
     assert!(
         f.db.execute(
-            "SignCertificate",
+            Operation::SignCertificate,
             &f.token,
             &Command {
                 zone: "production".into(),
@@ -445,7 +456,7 @@ fn idempotency_conflicts_secret_replays_and_failed_sign_rollback() {
         .is_err()
     );
     let after: i64 =
-        f.db.connection
+        f.db.connection()
             .query_row("SELECT next_serial FROM zones", [], |r| r.get(0))
             .unwrap();
     assert_eq!(after, serial);
@@ -455,10 +466,10 @@ fn idempotency_conflicts_secret_replays_and_failed_sign_rollback() {
         max_duration: 60,
         ..cmd()
     };
-    f.db.execute("CreateAccessToken", &f.admin, &create)
+    f.db.execute(Operation::CreateAccessToken, &f.admin, &create)
         .unwrap();
     assert_eq!(
-        f.db.execute("CreateAccessToken", &f.admin, &create)
+        f.db.execute(Operation::CreateAccessToken, &f.admin, &create)
             .unwrap_err()
             .reason,
         "SECRET_ALREADY_DELIVERED"
@@ -477,7 +488,9 @@ fn certificate_retries_require_current_zone_authorization() {
                 .unwrap(),
             ..cmd()
         };
-        let first = f.db.execute("SignCertificate", &f.token, &request).unwrap();
+        let first =
+            f.db.execute(Operation::SignCertificate, &f.token, &request)
+                .unwrap();
         let change = Command {
             user: "alice".into(),
             zone: "production".into(),
@@ -487,18 +500,18 @@ fn certificate_retries_require_current_zone_authorization() {
         };
         f.db.execute(
             if revoke_grant {
-                "RevokeZone"
+                Operation::RevokeZone
             } else {
-                "UpdateZone"
+                Operation::UpdateZone
             },
             &f.admin,
             &change,
         )
         .unwrap();
-        for request_id in [request.request_id.clone(), auth::id()] {
+        for request_id in [request.request_id.clone(), auth::new_id()] {
             assert_eq!(
                 f.db.execute(
-                    "SignCertificate",
+                    Operation::SignCertificate,
                     &f.token,
                     &Command {
                         request_id,
@@ -512,24 +525,25 @@ fn certificate_retries_require_current_zone_authorization() {
         }
         f.db.execute(
             if revoke_grant {
-                "GrantZone"
+                Operation::GrantZone
             } else {
-                "UpdateZone"
+                Operation::UpdateZone
             },
             &f.admin,
             &Command {
-                request_id: auth::id(),
+                request_id: auth::new_id(),
                 active: Some(true),
                 ..change
             },
         )
         .unwrap();
         assert_eq!(
-            f.db.execute("SignCertificate", &f.token, &request).unwrap(),
+            f.db.execute(Operation::SignCertificate, &f.token, &request)
+                .unwrap(),
             first
         );
         assert_eq!(f.db.issuance_count, 1);
-        let (serial, issued): (u64, u64) = f.db.connection.query_row(
+        let (serial, issued): (u64, u64) = f.db.connection().query_row(
             "SELECT next_serial,(SELECT count(*) FROM issued_certificates) FROM zones WHERE name='production'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -542,7 +556,7 @@ fn certificate_retries_require_current_zone_authorization() {
 fn certificate_retries_accept_consumed_totp() {
     let mut f = Fixture::new();
     let secret = auth::totp_secret();
-    f.db.connection
+    f.db.connection()
         .execute(
             "UPDATE users SET totp_secret=?1,last_step=-1 WHERE name='alice'",
             [&*secret],
@@ -559,17 +573,20 @@ fn certificate_retries_accept_consumed_totp() {
         totp: totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, &bytes, auth::now()),
         ..cmd()
     };
-    let first = f.db.execute("SignCertificate", &f.token, &request).unwrap();
+    let first =
+        f.db.execute(Operation::SignCertificate, &f.token, &request)
+            .unwrap();
     assert_eq!(
-        f.db.execute("SignCertificate", &f.token, &request).unwrap(),
+        f.db.execute(Operation::SignCertificate, &f.token, &request)
+            .unwrap(),
         first
     );
     assert_eq!(
         f.db.execute(
-            "SignCertificate",
+            Operation::SignCertificate,
             &f.token,
             &Command {
-                request_id: auth::id(),
+                request_id: auth::new_id(),
                 ..request
             }
         )
@@ -616,7 +633,7 @@ fn strict_yaml_permissions_paths_and_key_discovery() {
 fn pagination_updates_expired_enrollment_and_offline_reset() {
     let mut f = Fixture::new();
     f.db.execute(
-        "CreateUser",
+        Operation::CreateUser,
         &f.admin,
         &Command {
             name: "bob".into(),
@@ -627,7 +644,7 @@ fn pagination_updates_expired_enrollment_and_offline_reset() {
     .unwrap();
     let page =
         f.db.execute(
-            "ListUsers",
+            Operation::ListUsers,
             &f.admin,
             &Command {
                 page_size: 1,
@@ -639,7 +656,7 @@ fn pagination_updates_expired_enrollment_and_offline_reset() {
     assert!(!page.next_page_token.is_empty());
     let next =
         f.db.execute(
-            "ListUsers",
+            Operation::ListUsers,
             &f.admin,
             &Command {
                 page_token: page.next_page_token,
@@ -650,7 +667,7 @@ fn pagination_updates_expired_enrollment_and_offline_reset() {
         .unwrap();
     assert_eq!(next.resources[0].name, "bob");
     f.db.execute(
-        "UpdateAccessToken",
+        Operation::UpdateAccessToken,
         &f.admin,
         &Command {
             user: "alice".into(),
@@ -661,14 +678,14 @@ fn pagination_updates_expired_enrollment_and_offline_reset() {
     )
     .unwrap();
     assert_eq!(f.sign("").unwrap().effective_duration, 30);
-    f.db.execute("BeginTotpEnrollment", &f.token, &cmd())
+    f.db.execute(Operation::BeginTotpEnrollment, &f.token, &cmd())
         .unwrap();
-    f.db.connection
+    f.db.connection()
         .execute("UPDATE users SET pending_expires=0", [])
         .unwrap();
     assert_eq!(
         f.db.execute(
-            "ConfirmTotpEnrollment",
+            Operation::ConfirmTotpEnrollment,
             &f.token,
             &Command {
                 totp: "000000".into(),
@@ -679,10 +696,16 @@ fn pagination_updates_expired_enrollment_and_offline_reset() {
         .reason,
         "ENROLLMENT_EXPIRED"
     );
-    let replacement = auth::new_key("ad");
+    let replacement = auth::new_key(auth::KeyKind::Admin);
     f.db.reset_admin(&replacement).unwrap();
-    assert!(f.db.execute("ListUsers", &f.admin, &cmd()).is_err());
-    assert!(f.db.execute("ListUsers", &replacement, &cmd()).is_ok());
+    assert!(
+        f.db.execute(Operation::ListUsers, &f.admin, &cmd())
+            .is_err()
+    );
+    assert!(
+        f.db.execute(Operation::ListUsers, &replacement, &cmd())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -709,7 +732,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
     let mut f = Fixture::new();
     for name in ["staging", "ungranted"] {
         f.db.execute(
-            "CreateZone",
+            Operation::CreateZone,
             &f.admin,
             &Command {
                 name: name.into(),
@@ -720,7 +743,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
         .unwrap();
     }
     f.db.execute(
-        "GrantZone",
+        Operation::GrantZone,
         &f.admin,
         &Command {
             user: "alice".into(),
@@ -730,7 +753,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
     )
     .unwrap();
     f.db.execute(
-        "UpdateZone",
+        Operation::UpdateZone,
         &f.admin,
         &Command {
             name: "production".into(),
@@ -744,14 +767,16 @@ fn user_zone_listing_is_scoped_and_paginated() {
         page_size: 1,
         ..cmd()
     };
-    let first = f.db.execute("ListUserZones", &f.admin, &query).unwrap();
+    let first =
+        f.db.execute(Operation::ListUserZones, &f.admin, &query)
+            .unwrap();
     assert_eq!(first.resources.len(), 1);
     assert_eq!(first.resources[0].name, "production");
     assert!(!first.resources[0].active);
     assert!(!first.next_page_token.is_empty());
     let next =
         f.db.execute(
-            "ListUserZones",
+            Operation::ListUserZones,
             &f.admin,
             &Command {
                 page_token: first.next_page_token.clone(),
@@ -763,7 +788,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
     assert_eq!(next.resources[0].name, "staging");
     assert!(next.next_page_token.is_empty());
     f.db.execute(
-        "CreateUser",
+        Operation::CreateUser,
         &f.admin,
         &Command {
             name: "bob".into(),
@@ -774,7 +799,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
     .unwrap();
     assert!(
         f.db.execute(
-            "ListUserZones",
+            Operation::ListUserZones,
             &f.admin,
             &Command {
                 user: "bob".into(),
@@ -787,7 +812,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
     );
     assert_eq!(
         f.db.execute(
-            "ListUserZones",
+            Operation::ListUserZones,
             &f.admin,
             &Command {
                 user: "bob".into(),
@@ -800,14 +825,14 @@ fn user_zone_listing_is_scoped_and_paginated() {
         Code::InvalidArgument
     );
     assert_eq!(
-        f.db.execute("ListUserZones", &f.token, &query)
+        f.db.execute(Operation::ListUserZones, &f.token, &query)
             .unwrap_err()
             .code,
         Code::PermissionDenied
     );
     assert_eq!(
         f.db.execute(
-            "ListUserZones",
+            Operation::ListUserZones,
             &f.admin,
             &Command {
                 user: "missing".into(),
@@ -819,7 +844,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
         Code::NotFound
     );
     f.db.execute(
-        "RemoveUser",
+        Operation::RemoveUser,
         &f.admin,
         &Command {
             name: "alice".into(),
@@ -828,7 +853,7 @@ fn user_zone_listing_is_scoped_and_paginated() {
     )
     .unwrap();
     assert_eq!(
-        f.db.execute("ListUserZones", &f.admin, &query)
+        f.db.execute(Operation::ListUserZones, &f.admin, &query)
             .unwrap_err()
             .code,
         Code::NotFound
@@ -892,7 +917,7 @@ fn client_config_accepts_inline_tls_and_rejects_ambiguous_trust() {
 #[test]
 fn configs_accept_inline_and_external_secret_sources() {
     let dir = tempfile::tempdir().unwrap();
-    let api_key = auth::new_key("ad");
+    let api_key = auth::new_key(auth::KeyKind::Admin);
     let bootstrap_secret = auth::random_secret();
     config::exclusive(
         &dir.path().join("api-key"),
@@ -969,31 +994,34 @@ fn imported_ca_preserves_identity_signs_and_survives_restart() {
         max_duration: 3600,
         ..cmd()
     };
-    let result = f.db.execute("ImportZone", &f.admin, &import).unwrap();
+    let result =
+        f.db.execute(Operation::ImportZone, &f.admin, &import)
+            .unwrap();
     assert_eq!(
         result.resources[0].fingerprint,
         ca.fingerprint(ssh_key::HashAlg::Sha256).to_string()
     );
     assert_eq!(
-        f.db.execute("ImportZone", &f.admin, &import).unwrap(),
+        f.db.execute(Operation::ImportZone, &f.admin, &import)
+            .unwrap(),
         result
     );
     let mut duplicate = import.clone();
-    duplicate.request_id = auth::id();
+    duplicate.request_id = auth::new_id();
     duplicate.secret = signing::generate("different")
         .unwrap()
         .to_openssh(ssh_key::LineEnding::LF)
         .unwrap()
         .to_string();
     assert_eq!(
-        f.db.execute("ImportZone", &f.admin, &duplicate)
+        f.db.execute(Operation::ImportZone, &f.admin, &duplicate)
             .unwrap_err()
             .code,
         Code::AlreadyExists
     );
     let public =
         f.db.execute(
-            "GetPublicKey",
+            Operation::GetPublicKey,
             "",
             &Command {
                 zone: "imported".into(),
@@ -1003,7 +1031,7 @@ fn imported_ca_preserves_identity_signs_and_survives_restart() {
         .unwrap();
     assert_eq!(public.fingerprint, result.resources[0].fingerprint);
     f.db.execute(
-        "GrantZone",
+        Operation::GrantZone,
         &f.admin,
         &Command {
             user: "alice".into(),
@@ -1023,7 +1051,7 @@ fn imported_ca_preserves_identity_signs_and_survives_restart() {
         ..cmd()
     };
     let signed =
-        f.db.execute("SignCertificate", &f.token, &signing_request)
+        f.db.execute(Operation::SignCertificate, &f.token, &signing_request)
             .unwrap();
     let certificate = ssh_key::Certificate::from_openssh(&signed.certificate).unwrap();
     certificate
@@ -1033,10 +1061,10 @@ fn imported_ca_preserves_identity_signs_and_survives_restart() {
     let mut db = Database::open(&f.dir.path().join("ca.db"), &f.secret).unwrap();
     let signed = db
         .execute(
-            "SignCertificate",
+            Operation::SignCertificate,
             &f.token,
             &Command {
-                request_id: auth::id(),
+                request_id: auth::new_id(),
                 ..signing_request
             },
         )
@@ -1071,7 +1099,7 @@ fn invalid_imports_do_not_create_zones() {
             .unwrap(),
     ] {
         let result = f.db.execute(
-            "ImportZone",
+            Operation::ImportZone,
             &f.admin,
             &Command {
                 name: "invalid".into(),
@@ -1082,7 +1110,9 @@ fn invalid_imports_do_not_create_zones() {
         );
         assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
     }
-    let zones = f.db.execute("ListZones", &f.admin, &cmd()).unwrap();
+    let zones =
+        f.db.execute(Operation::ListZones, &f.admin, &cmd())
+            .unwrap();
     assert_eq!(zones.resources.len(), 1);
     assert_eq!(zones.resources[0].name, "production");
 }
@@ -1091,7 +1121,7 @@ fn invalid_imports_do_not_create_zones() {
 fn duplicate_ca_imports_are_atomic_and_ignore_comments_and_zone_state() {
     let mut f = Fixture::new();
     let pem: String =
-        f.db.connection
+        f.db.connection()
             .query_row(
                 "SELECT private_key FROM zones WHERE name='production'",
                 [],
@@ -1101,7 +1131,7 @@ fn duplicate_ca_imports_are_atomic_and_ignore_comments_and_zone_state() {
     let mut ca = signing::import(&pem).unwrap();
     for active in [true, false] {
         f.db.execute(
-            "UpdateZone",
+            Operation::UpdateZone,
             &f.admin,
             &Command {
                 name: "production".into(),
@@ -1121,11 +1151,13 @@ fn duplicate_ca_imports_are_atomic_and_ignore_comments_and_zone_state() {
                 max_duration: 60,
                 ..cmd()
             };
-            let error = f.db.execute("ImportZone", &f.admin, &request).unwrap_err();
+            let error =
+                f.db.execute(Operation::ImportZone, &f.admin, &request)
+                    .unwrap_err();
             assert_eq!(error.code, Code::AlreadyExists);
             assert_eq!(error.reason, "DUPLICATE_CA");
             let saved: u64 =
-                f.db.connection
+                f.db.connection()
                     .query_row(
                         "SELECT count(*) FROM idempotency_records WHERE request_id=?1",
                         [&request.request_id],
@@ -1136,14 +1168,14 @@ fn duplicate_ca_imports_are_atomic_and_ignore_comments_and_zone_state() {
         }
     }
     assert_eq!(
-        f.db.execute("ListZones", &f.admin, &cmd())
+        f.db.execute(Operation::ListZones, &f.admin, &cmd())
             .unwrap()
             .resources
             .len(),
         1
     );
     f.db.execute(
-        "ImportZone",
+        Operation::ImportZone,
         &f.admin,
         &Command {
             name: "restricted".into(),
@@ -1174,7 +1206,7 @@ fn assert_ca_indexes(db: &Database) {
                 "'different fingerprint'"
             }
         );
-        let error = db.connection.execute(&sql, []).unwrap_err();
+        let error = db.connection().execute(&sql, []).unwrap_err();
         assert_eq!(
             error.sqlite_error_code(),
             Some(rusqlite::ErrorCode::ConstraintViolation)
@@ -1186,7 +1218,7 @@ fn assert_ca_indexes(db: &Database) {
 fn ca_uniqueness_is_enforced_on_new_and_existing_databases() {
     let f = Fixture::new();
     assert_ca_indexes(&f.db);
-    f.db.connection
+    f.db.connection()
         .execute_batch("DROP INDEX zone_ca_public_key; DROP INDEX zone_ca_fingerprint;")
         .unwrap();
     drop(f.db);
@@ -1199,10 +1231,10 @@ fn ca_uniqueness_is_enforced_on_new_and_existing_databases() {
 #[test]
 fn existing_duplicate_ca_keys_prevent_unlock_without_partial_migration() {
     let f = Fixture::new();
-    f.db.connection
+    f.db.connection()
         .execute_batch("DROP INDEX zone_ca_public_key; DROP INDEX zone_ca_fingerprint;")
         .unwrap();
-    f.db.connection.execute(
+    f.db.connection().execute(
         "INSERT INTO zones SELECT 'duplicate','restricted',private_key,public_key,fingerprint,max_duration,1,0,created_at,updated_at FROM zones WHERE name='production'", [],
     ).unwrap();
     drop(f.db);
@@ -1237,14 +1269,17 @@ fn tls_server_name_config_validation_and_round_trip() {
 #[test]
 fn failed_auth_is_audited_and_oldest_events_are_evicted() {
     let mut f = Fixture::new();
-    f.db.connection
+    f.db.connection()
         .execute("DELETE FROM audit_events", [])
         .unwrap();
-    f.db.connection.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO audit_events SELECT CAST(x AS TEXT),'','','seed','OK',CAST(x AS TEXT),0 FROM n", []).unwrap();
+    f.db.connection().execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO audit_events SELECT CAST(x AS TEXT),'','','seed','OK',CAST(x AS TEXT),0 FROM n", []).unwrap();
     let malformed = cmd();
-    assert!(f.db.execute("ListZones", "not-a-key", &malformed).is_err());
+    assert!(
+        f.db.execute(Operation::ListZones, "not-a-key", &malformed)
+            .is_err()
+    );
     let row: (String, String, String) =
-        f.db.connection
+        f.db.connection()
             .query_row(
                 "SELECT actor_type,actor_id,result FROM audit_events WHERE request_id=?1",
                 [&malformed.request_id],
@@ -1255,17 +1290,20 @@ fn failed_auth_is_audited_and_oldest_events_are_evicted() {
         row,
         (String::new(), String::new(), "MALFORMED_CREDENTIAL".into())
     );
-    let invalid = auth::new_key("ad");
+    let invalid = auth::new_key(auth::KeyKind::Admin);
     for _ in 0..50 {
-        assert!(f.db.execute("ListZones", &invalid, &cmd()).is_err());
+        assert!(
+            f.db.execute(Operation::ListZones, &invalid, &cmd())
+                .is_err()
+        );
     }
     let count: i64 =
-        f.db.connection
+        f.db.connection()
             .query_row("SELECT count(*) FROM audit_events", [], |r| r.get(0))
             .unwrap();
     assert_eq!(count, 10000);
     let oldest: String =
-        f.db.connection
+        f.db.connection()
             .query_row(
                 "SELECT id FROM audit_events ORDER BY rowid LIMIT 1",
                 [],
@@ -1273,7 +1311,7 @@ fn failed_auth_is_audited_and_oldest_events_are_evicted() {
             )
             .unwrap();
     assert_eq!(oldest, "52");
-    f.db.connection
+    f.db.connection()
         .execute(
             "INSERT INTO audit_events VALUES('extra','','','seed','OK','extra',0)",
             [],
@@ -1283,7 +1321,7 @@ fn failed_auth_is_audited_and_oldest_events_are_evicted() {
     drop(f.db);
     let db = Database::open(&path, &f.secret).unwrap();
     let count: i64 = db
-        .connection
+        .connection()
         .query_row("SELECT count(*) FROM audit_events", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 10000);
