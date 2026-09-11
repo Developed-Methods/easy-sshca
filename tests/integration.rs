@@ -31,20 +31,31 @@ struct Server {
 }
 impl Server {
     async fn new() -> Self {
+        let tls = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let trust = tls.cert.pem();
+        Self::with_tls(tls.cert, tls.signing_key, trust, None).await
+    }
+    async fn with_tls(
+        certificate: rcgen::Certificate,
+        key_pair: rcgen::KeyPair,
+        trust: String,
+        server_name: Option<String>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ca.db");
         let secret = auth::random_secret().to_string();
         let admin = auth::new_key("ad").to_string();
         Database::initialize(&db, &secret, &admin, "Integration CA").unwrap();
-        let tls = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let cert = dir.path().join("tls.crt");
         let key = dir.path().join("tls.key");
-        config::exclusive(&cert, tls.cert.pem().as_bytes(), 0o600).unwrap();
-        config::exclusive(&key, tls.signing_key.serialize_pem().as_bytes(), 0o600).unwrap();
+        config::exclusive(&cert, certificate.pem().as_bytes(), 0o600).unwrap();
+        config::exclusive(&key, key_pair.serialize_pem().as_bytes(), 0o600).unwrap();
         let rpc = port();
         let https = port();
         config::exclusive(&dir.path().join("server.yaml"),format!("version: 1\nserver: https://127.0.0.1:{rpc}\ndatabase: {}\nrpc_listen: 127.0.0.1:{rpc}\nhttps_listen: 127.0.0.1:{https}\ntls:\n  certificate: {}\n  private_key: {}\nlimits:\n  request_bytes: 65536\n  rpc_timeout: 10s\n  database_queue: 16\n",db.display(),cert.display(),key.display()).as_bytes(), 0o600).unwrap();
         let process = Self::spawn(dir.path());
+        let trust_path = dir.path().join("trust.pem");
+        config::exclusive(&trust_path, trust.as_bytes(), 0o600).unwrap();
         let s = Self {
             dir,
             process,
@@ -55,8 +66,9 @@ impl Server {
                 api_key_file: None,
                 bootstrap_secret: None,
                 bootstrap_secret_file: None,
-                tls_ca: Some(cert),
+                tls_ca: Some(trust_path),
                 tls_ca_pem: None,
+                tls_server_name: server_name,
                 defaults: Default::default(),
             },
             secret,
@@ -1148,6 +1160,7 @@ async fn token_export_checks_destination_before_creating_credentials() {
     let mut inline_admin = s.client.clone();
     inline_admin.tls_ca_pem = inline_admin.tls_pem().unwrap();
     inline_admin.tls_ca = None;
+    inline_admin.tls_server_name = Some("ca.example".into());
     config::exclusive(
         &admin_path,
         inline_admin.serialize_for(&admin_path).unwrap().as_bytes(),
@@ -1191,6 +1204,7 @@ async fn token_export_checks_destination_before_creating_credentials() {
     );
     let exported = ClientConfig::load(&destination).unwrap();
     assert_eq!(exported.tls_ca_pem, inline_admin.tls_ca_pem);
+    assert_eq!(exported.tls_server_name, inline_admin.tls_server_name);
     assert!(exported.tls_ca.is_none());
 }
 
@@ -1302,4 +1316,30 @@ async fn ca_import_accepts_files_and_stdin_without_logging_keys() {
     {
         assert!(!logs.contains(line));
     }
+}
+
+#[tokio::test]
+async fn ca_hostname_verification_and_port_forward_override() {
+    let mut params = rcgen::CertificateParams::new(vec!["Test CA".into()]).unwrap();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let issuer =
+        rcgen::CertifiedIssuer::self_signed(params, rcgen::KeyPair::generate().unwrap()).unwrap();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let certificate = rcgen::CertificateParams::new(vec!["ca.example".into()])
+        .unwrap()
+        .signed_by(&key, &issuer)
+        .unwrap();
+    let server = Server::with_tls(certificate, key, issuer.pem(), Some("ca.example".into())).await;
+    assert!(cli::channel(&server.client).await.is_ok());
+    let mut client = server.client.clone();
+    client.tls_server_name = None;
+    assert!(cli::channel(&client).await.is_err());
+    client.tls_server_name = Some("attacker.example".into());
+    assert!(cli::channel(&client).await.is_err());
+    client.tls_server_name = Some("ca.example".into());
+    client.tls_ca_pem = client.tls_pem().unwrap();
+    client.tls_ca = None;
+    assert!(cli::channel(&client).await.is_ok());
+    client.tls_server_name = None;
+    assert!(cli::channel(&client).await.is_err());
 }

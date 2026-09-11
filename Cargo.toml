@@ -41,6 +41,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "tracing-log"] }
 url = "2"
 uuid = { version = "1", features = ["v7"] }
+x509-parser = { version = "0.18", features = ["verify"] }
 zeroize = "1"
 
 [build-dependencies]
